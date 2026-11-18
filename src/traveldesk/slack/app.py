@@ -19,7 +19,7 @@ import json
 import logging
 import threading
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -728,6 +728,19 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
     if status == "need_info" and ("missing_fields" in result or result.get("escalate")):
         _handle_need_info(client, row_id, employee, employee_dm, picked, result, retry=retry)
         return
+    if status == "payment_link":
+        # Card declined (or none saved) and LetsFG offers a secure payment page:
+        # no "Booking started" — go straight to "payment needs approval".
+        _start_payment_link(client, row_id, employee, employee_dm, picked, result)
+        return
+    if status == "payment_blocked":
+        _payment_blocked(client, row_id, employee, employee_dm, picked, result)
+        return
+    if status == "awaiting_payment":
+        _notify(
+            client, employee_dm, ":hourglass: This booking is already waiting for payment on its secure link."
+        )
+        return
     if retry and (result.get("offer_expired") or result.get("price_changed")):
         db.update(row_id, status="expired", details={**picked, **result})
         threading.Thread(
@@ -805,6 +818,13 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
         except Exception as e:  # noqa: BLE001 — transient status failure: keep polling
             log.warning("status check failed for %s: %s", booking_ref, e)
             continue
+        if st.get("transient"):
+            continue
+        if st.get("status") == "payment_link":
+            log.info("booking %s → payment declined, LetsFG offers a pay link", booking_ref)
+            row = db.get(row_id) or {}
+            _start_payment_link(client, row_id, row.get("slack_user"), employee_dm, _row_details(row), st)
+            return
         state = st.get("status")
         if state != last:
             log.info("booking %s → %s", booking_ref, state)
@@ -827,6 +847,7 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
             charged = st.get("charged_amount")
             if charged is None:
                 charged = st.get("total")
+            before = db.get(row_id) or {}
             db.update(
                 row_id,
                 status="completed",
@@ -842,7 +863,10 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
                 text += f"\nTicket: {st['ticket_url']}"
             if domestic:
                 text += f"\n:identification_card: {_DOMESTIC_ID_LINE}"
-            _notify(client, employee_dm, text)
+            if before.get("pay_url"):
+                _post_ticket_in_thread(client, before, employee_dm, text)
+            else:
+                _notify(client, employee_dm, text)
             return
         if state in ("failed", "approval_expired", "not_started", "needs_attention", "cancelled"):
             db.update(
@@ -856,6 +880,338 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
         employee_dm,
         ":hourglass: Still not ticketed after the waiting time. Check your LetsFG email/account.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Pay by link: the card was declined (or none is saved) and LetsFG offers a
+# secure payment page. Paying it starts the booking by itself, so the bot
+# never calls /flights/book again for the request; it only polls.
+# ---------------------------------------------------------------------------
+
+_PAY_WAYS = "any card, Apple Pay, Google Pay or Revolut Pay"
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _parse_utc(value) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _local(dt: datetime) -> str:
+    return dt.astimezone().strftime("%d %b %H:%M")
+
+
+def _open_dm(client, user):
+    try:
+        return client.conversations_open(users=user)["channel"]["id"]
+    except Exception as e:  # noqa: BLE001 — Slack API failure must not stop the payment thread
+        log.warning("open DM to %s failed: %s", user, e)
+        return None
+
+
+def _approvers(row) -> list:
+    saved = [u for u in str(row.get("pay_approvers") or "").split(",") if u]
+    return saved or [row.get("slack_user")]
+
+
+def _amount(details) -> str:
+    amount = details.get("pay_amount") or details.get("price") or ""
+    currency = details.get("pay_currency") or details.get("currency") or ""
+    return f"{amount} {currency}".strip()
+
+
+def _pay_blocks(text, pay_url):
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "action_id": "pay_now",
+                    "text": {"type": "plain_text", "text": "Pay now"},
+                    "url": pay_url,
+                }
+            ],
+        },
+    ]
+
+
+def _search_again_blocks(text, row_id):
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "search_again",
+                    "text": {"type": "plain_text", "text": "Search again"},
+                    "value": json.dumps({"row": row_id}),
+                }
+            ],
+        },
+    ]
+
+
+def _start_payment_link(client, row_id, employee, employee_dm, picked, result):
+    """Record the pay link, send "Pay now" to the approver(s), then follow it."""
+    pay_url, new_ref = result.get("pay_url"), result.get("booking_ref")
+    summary = picked.get("summary", "")
+    if not pay_url or not new_ref:
+        db.update(row_id, status="failed", payment_status="failed", details={**picked, **result})
+        _notify(
+            client,
+            employee_dm,
+            f":warning: Not booked: the payment was declined. {result.get('message', '')}\n{summary}",
+        )
+        return
+    now = _utcnow()
+    valid_until = result.get("pay_valid_until")
+    expires = (
+        datetime.fromtimestamp(float(valid_until), UTC)
+        if valid_until
+        else now + timedelta(minutes=config.PAY_LINK_TIMEOUT_MINUTES)
+    )
+    approvers = list(config.PAYMENT_APPROVERS) or [employee]
+    keep = {k: v for k, v in result.items() if k not in ("status", "pay_url")}
+    db.update(
+        row_id,
+        status="awaiting_payment",
+        booking_ref=new_ref,
+        payment_status="awaiting_payment",
+        pay_url=pay_url,
+        declined_booking_ref=result.get("declined_booking_ref"),
+        pay_started_at=now.isoformat(),
+        pay_expires_at=expires.isoformat(),
+        pay_reminded_at=None,
+        pay_approvers=",".join(approvers),
+        details={**picked, **keep},
+    )
+    log.warning(
+        "payment needs approval row=%s booking=%s declined=%s kind=%s reason=%s expires=%s (%s) message=%s",
+        row_id,
+        new_ref,
+        result.get("declined_booking_ref"),
+        result.get("payment_kind"),
+        result.get("decline_reason"),
+        expires.isoformat(),
+        "LetsFG valid_until" if valid_until else f"fallback {config.PAY_LINK_TIMEOUT_MINUTES} min",
+        letsfg_rest._scrub(result.get("message", ""), {}),
+    )
+    declined = result.get("payment_kind") != "payment_required"
+    why = " ".join(p for p in (result.get("decline_message"), result.get("decline_advice")) if p)
+    text = (
+        f":credit_card: *Payment needs approval* — request #{row_id} for <@{employee}>\n"
+        f"*Flight:* {summary}\n*Amount:* {_amount({**picked, **result})}\n"
+        + (f"*Card declined:* {why}\n" if declined and why else "")
+        + f"Pay on the secure page ({_PAY_WAYS}); the booking then starts by itself. "
+        f"Link valid until {_local(expires)}.\n_Nothing is booked or charged until it's paid._"
+    )
+    for user in approvers:
+        _dm(client, user, text, _pay_blocks(text, pay_url))
+    if approvers != [employee]:
+        who = ", ".join(f"<@{u}>" for u in approvers)
+        _notify(
+            client,
+            employee_dm,
+            f":hourglass: *Waiting for payment approval* for *{summary}*. "
+            + ("The card on file was declined, so " if declined else "")
+            + f"{who} has the secure payment link. Nothing is booked or charged yet; "
+            "I'll tell you as soon as it's paid.",
+        )
+    watch_payment(client, row_id)
+
+
+def watch_payment(client, row_id):
+    """Poll the pay link's booking until it's paid, closed or expired.
+
+    Everything comes from the DB row, so this resumes correctly after a
+    restart. LetsFG's status wins: the expiry time only ends the wait while
+    LetsFG still says awaiting_payment."""
+    agent = agent_factory.get_agent()
+    row = db.get(row_id) or {}
+    employee = row.get("slack_user")
+    employee_dm = _open_dm(client, employee)
+    while True:
+        row = db.get(row_id) or {}
+        if row.get("status") != "awaiting_payment":
+            return
+        details = _row_details(row)
+        now = _utcnow()
+        started = _parse_utc(row.get("pay_started_at")) or now
+        expires = _parse_utc(row.get("pay_expires_at")) or started + timedelta(
+            minutes=config.PAY_LINK_TIMEOUT_MINUTES
+        )
+        if now >= expires:
+            _close_payment(
+                client, row, employee_dm, "expired", "The payment link expired before it was paid."
+            )
+            return
+        if not row.get("pay_reminded_at") and now >= started + (expires - started) / 2:
+            db.update(row_id, pay_reminded_at=now.isoformat())
+            text = (
+                f":bell: *Reminder:* payment for request #{row_id} (<@{employee}>) is still waiting.\n"
+                f"*Flight:* {details.get('summary', '')} · {_amount(details)}\n"
+                f"Link valid until {_local(expires)}."
+            )
+            for user in _approvers(row):
+                _dm(client, user, text, _pay_blocks(text, row["pay_url"]))
+        time.sleep(config.POLL_SECONDS)
+        try:
+            st = _call_agent_status(agent, row["booking_ref"], row_id)
+        except Exception as e:  # noqa: BLE001 — transient status failure: keep polling
+            log.warning("pay-link status check failed for %s: %s", row["booking_ref"], e)
+            continue
+        state = st.get("status")
+        if st.get("transient") or state == "awaiting_payment":
+            continue
+        log.info("pay-link booking %s → %s", row["booking_ref"], state)
+        if state in ("failed", "payment_link", "approval_expired", "expired", "not_started", "cancelled"):
+            reason = st.get("message") or st.get("failure_reason") or "LetsFG closed the payment link."
+            expired = state in ("approval_expired", "expired") or "expir" in reason.lower()
+            _close_payment(client, row, employee_dm, "expired" if expired else "failed", reason)
+            return
+        if state == "needs_attention":
+            db.update(row_id, status="needs_attention", details={**details, **st})
+            msg = (
+                f":warning: Request #{row_id} ({details.get('summary', '')}) needs attention at "
+                f"LetsFG: {st.get('message', '')}"
+            )
+            for user in dict.fromkeys([*_approvers(row), employee]):
+                _dm(client, user, msg)
+            return
+        # Paid: the booking is under way (or already done).
+        db.update(row_id, status="booking_in_progress", payment_status="held")
+        paid = (
+            f":white_check_mark: Payment received for *{details.get('summary', '')}*. "
+            "LetsFG is booking it now (usually 4-11 minutes)."
+        )
+        for user in _approvers(row):
+            if user != employee:
+                _dm(client, user, paid)
+        _notify(client, employee_dm, paid)
+        watch_booking(client, row_id, employee_dm, row["booking_ref"], domestic=bool(details.get("domestic")))
+        return
+
+
+def _close_payment(client, row, employee_dm, status, reason):
+    """LetsFG closed the link or it expired: say so and offer a new search."""
+    row_id = row["id"]
+    details = _row_details(row)
+    db.update(row_id, status=status, payment_status="unpaid")
+    log.warning(
+        "pay link closed row=%s booking=%s → %s: %s",
+        row_id,
+        row.get("booking_ref"),
+        status,
+        letsfg_rest._scrub(reason, {}),
+    )
+    word = "expired" if status == "expired" else "was not completed"
+    text = (
+        f":hourglass: The payment link for *{details.get('summary', '')}* {word}. "
+        f"Nothing was booked or charged. {reason}"
+    )
+    employee = row.get("slack_user")
+    for user in _approvers(row):
+        if user != employee:
+            _dm(client, user, f"Request #{row_id} (<@{employee}>): {text}")
+    blocks = _search_again_blocks(text + "\nWant me to look again?", row_id)
+    if employee_dm:
+        try:
+            client.chat_postMessage(channel=employee_dm, text=text, blocks=blocks)
+            return
+        except Exception as e:  # noqa: BLE001 — fall back to a plain DM
+            log.warning("could not post search-again for row %s: %s", row_id, type(e).__name__)
+    _dm(client, employee, text, blocks)
+
+
+def _payment_blocked(client, row_id, employee, employee_dm, picked, result):
+    """409 too_many_attempts: LetsFG won't retry this booking attempt's payment."""
+    summary = picked.get("summary", "")
+    db.update(row_id, status="payment_blocked", payment_status="failed", details={**picked, **result})
+    log.warning("payment blocked row=%s: %s", row_id, letsfg_rest._scrub(result.get("message", ""), {}))
+    admin = (
+        f":no_entry: *Payment blocked by LetsFG* — request #{row_id} for <@{employee}>\n"
+        f"*Flight:* {summary}\n"
+        "The card was declined 5 times for this booking attempt (LetsFG counts per booking "
+        "attempt), so LetsFG won't try it again. Nothing was charged.\n"
+        "*Next:* connect another payment method on the LetsFG account; the traveller can then "
+        "search again.\n"
+        f"_LetsFG:_ {result.get('message', '')}"
+    )
+    approvers = list(config.PAYMENT_APPROVERS) or [employee]
+    for user in approvers:
+        _dm(client, user, admin)
+    if approvers == [employee]:
+        return
+    text = (
+        f":warning: Couldn't take payment for *{summary}*. Nothing was booked or charged. "
+        "The payment approver has been told."
+    )
+    blocks = _search_again_blocks(text, row_id)
+    if employee_dm:
+        try:
+            client.chat_postMessage(channel=employee_dm, text=text, blocks=blocks)
+            return
+        except Exception as e:  # noqa: BLE001 — fall back to a plain DM
+            log.warning("could not tell traveller about blocked payment row %s: %s", row_id, type(e).__name__)
+    _dm(client, employee, text, blocks)
+
+
+def _post_ticket_in_thread(client, row, employee_dm, text):
+    """Ticket issued for a pay-link booking: reply under the original confirmation card."""
+    details = _row_details(row)
+    full = f"{text}\n*Flight:* {details.get('summary', '')}"
+    channel, ts = row.get("manager_channel"), row.get("manager_message_ts")
+    posted = False
+    if channel and ts:
+        try:
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=full)
+            posted = True
+        except Exception as e:  # noqa: BLE001 — fall back to a plain DM
+            log.warning("thread reply failed for row %s: %s", row["id"], type(e).__name__)
+    if not posted:
+        _notify(client, employee_dm, full)
+    employee = row.get("slack_user")
+    for user in _approvers(row):
+        if user != employee:
+            _dm(client, user, f"Request #{row['id']} (<@{employee}>): {full}")
+
+
+@app.action("pay_now")
+def on_pay_now(ack):
+    ack()  # a link button; Slack still sends the click to the app
+
+
+@app.action("search_again")
+def on_search_again(ack, body, client, action):
+    ack()
+    _handle_search_again(body, client, action)
+
+
+def _handle_search_again(body, client, action):
+    actor = body["user"]["id"]
+    try:
+        row_id = int(json.loads(action["value"])["row"])
+    except (KeyError, ValueError, TypeError):
+        return
+    row = db.get(row_id)
+    if not row or row["slack_user"] != actor:
+        log.warning("unauthorised search_again row=%s user=%s", row_id, actor)
+        return
+    if not db.claim_status(row_id, ("expired", "failed", "payment_blocked"), "replaced"):
+        return  # already searched again (double click)
+    _update_card_as_done(client, body, "Searching again…")
+    dm = (body.get("channel") or {}).get("id") or _open_dm(client, actor)
+    start_request(client, actor, row["request"], dm)
 
 
 # ---------------------------------------------------------------------------
@@ -1564,12 +1920,15 @@ def _resume_unfinished_bookings(client):
             domestic = bool(json.loads(row.get("details") or "{}").get("domestic"))
         except (ValueError, TypeError, AttributeError):
             domestic = False
-        threading.Thread(
-            target=watch_booking,
-            args=(client, row["id"], employee_dm, booking_ref),
-            kwargs={"domestic": domestic},
-            daemon=True,
-        ).start()
+        if row.get("status") == "awaiting_payment":
+            threading.Thread(target=watch_payment, args=(client, row["id"]), daemon=True).start()
+        else:
+            threading.Thread(
+                target=watch_booking,
+                args=(client, row["id"], employee_dm, booking_ref),
+                kwargs={"domestic": domestic},
+                daemon=True,
+            ).start()
         resumed += 1
     if resumed:
         log.info("resumed %d in-flight booking(s) after restart", resumed)

@@ -233,7 +233,7 @@ def test_status_awaiting_payment_exposes_pay_url(api):
         }
     )
     out = letsfg_rest.get_booking("BKG-1")
-    assert out["status"] == "awaiting_approval"
+    assert out["status"] == "awaiting_payment"
     assert out["approve_url"] == "https://letsfg.co/pay/x"
 
 

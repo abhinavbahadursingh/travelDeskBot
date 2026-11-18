@@ -44,6 +44,13 @@ _COLUMNS = [
     ("manager_channel", "TEXT"),  # DM channel the card lives in
     ("provider", "TEXT"),  # ai provider used (claude)
     ("charged_amount", "REAL"),  # actual amount charged; set only on completed + PNR
+    # pay-by-link (card declined → LetsFG secure payment page)
+    ("pay_url", "TEXT"),  # secure payment page; booking_ref = the booking it starts
+    ("declined_booking_ref", "TEXT"),  # the declined attempt
+    ("pay_started_at", "TEXT"),  # ISO UTC
+    ("pay_expires_at", "TEXT"),  # ISO UTC: LetsFG valid_until, else the fallback timeout
+    ("pay_reminded_at", "TEXT"),  # ISO UTC of the one reminder
+    ("pay_approvers", "TEXT"),  # comma-separated Slack IDs the link went to
 ]
 
 _AI_USAGE_COLUMNS = [
@@ -166,6 +173,18 @@ def transition(row_id: int, from_status: str, to_status: str) -> bool:
         cur = c.execute(
             "UPDATE bookings SET status=? WHERE id=? AND status=? AND booking_ref IS NULL",
             (to_status, row_id, from_status),
+        )
+        return cur.rowcount == 1
+
+
+def claim_status(row_id: int, from_statuses, to_status: str) -> bool:
+    """Atomic status change from any of `from_statuses`; True only for the caller that made it."""
+    froms = tuple(from_statuses)
+    marks = ",".join("?" for _ in froms)
+    with _lock, _conn() as c:
+        cur = c.execute(
+            f"UPDATE bookings SET status=? WHERE id=? AND status IN ({marks})",
+            (to_status, row_id, *froms),
         )
         return cur.rowcount == 1
 
@@ -341,6 +360,8 @@ def unfinished_bookings() -> list[dict]:
         "approval_expired",
         "needs_attention",
         "not_started",
+        "expired",
+        "payment_blocked",
     )
     placeholders = ",".join("?" for _ in terminal)
     with _lock, _conn() as c:

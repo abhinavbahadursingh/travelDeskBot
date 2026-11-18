@@ -222,12 +222,56 @@ def book_flight(search_id: str, offer_id: str, traveller: dict, idempotency_key:
     if not booking_id or data.get("ok") is False:
         return {"status": "failed", "message": data.get("message") or "LetsFG did not return a booking_id."}
     state = str(data.get("state") or "booking_in_progress").lower()
+    if state == "awaiting_payment" and data.get("pay_url"):
+        return payment_link(data, booking_id=booking_id, kind="payment_required")
     return {
         "status": _state_to_status(state, pnr=None),
         "booking_ref": booking_id,
         "approve_url": data.get("pay_url"),
         "message": data.get("message", ""),
     }
+
+
+def payment_link(data: dict, *, booking_id=None, kind: str = "payment_declined") -> dict:
+    """A LetsFG answer that says: pay on this secure page and the booking
+    starts by itself (status "payment_link"). Works on the 402 book body,
+    a failed status with `retry`, and an awaiting_payment status.
+
+    `booking_ref` is the booking that paying starts — poll that one; never
+    call /flights/book again for the request."""
+    retry = data.get("retry") if isinstance(data.get("retry"), dict) else {}
+    pay_url = retry.get("pay_url") or data.get("pay_url")
+    new_ref = (
+        retry.get("booking_id")
+        or data.get("retry_booking_id")
+        or _booking_id_from_poll_url(data.get("poll_url"))
+        or booking_id
+    )
+    valid_until = retry.get("valid_until") or data.get("valid_until")
+    try:
+        valid_until = float(valid_until) if valid_until not in (None, "") else None
+    except (TypeError, ValueError):
+        valid_until = None
+    return {
+        "status": "payment_link",
+        "payment_kind": kind,
+        "booking_ref": new_ref,
+        "declined_booking_ref": data.get("booking_id") if new_ref != data.get("booking_id") else None,
+        "pay_url": pay_url,
+        "pay_valid_until": valid_until,
+        "pay_amount": retry.get("amount") or data.get("held_amount"),
+        "pay_currency": retry.get("currency") or data.get("currency"),
+        "decline_reason": data.get("decline_reason") or "",
+        "decline_message": data.get("decline_message") or "",
+        "decline_advice": data.get("decline_advice") or "",
+        "message": _status_message(data, "failed"),
+    }
+
+
+def _booking_id_from_poll_url(url) -> str | None:
+    if not url or "/flights/bookings/" not in str(url):
+        return None
+    return str(url).rstrip("/").rsplit("/", 1)[-1] or None
 
 
 # --- Status ----------------------------------------------------------------
@@ -243,11 +287,17 @@ def get_booking(booking_id: str) -> dict:
             # Transient: keep polling rather than declaring a final state.
             return {
                 "status": "booking_in_progress",
+                "transient": True,  # not a real state: callers must not act on it
                 "message": f"status check temporarily failed ({e.status_code})",
             }
         return {"status": "needs_attention", "message": e.text or str(e)}
     state = str(data.get("state") or "").lower() or "booking_in_progress"
     pnr = data.get("pnr")
+    retry = data.get("retry") if isinstance(data.get("retry"), dict) else {}
+    if state == "failed" and (retry.get("pay_url") or data.get("pay_url")):
+        # Declined hold with a 3-D Secure / pay-another-way page: the same
+        # payment continues as a new booking (retry.booking_id).
+        return {**payment_link(data, booking_id=booking_id), "state": state}
     status = _state_to_status(state, pnr=pnr)
     out = {
         "status": status,
@@ -256,6 +306,9 @@ def get_booking(booking_id: str) -> dict:
         "charged_amount": data.get("charged_amount") if status == "completed" else None,
         "currency": data.get("currency") or config.CURRENCY,
         "approve_url": data.get("pay_url"),
+        "terminal": bool(data.get("terminal")),
+        "failure_reason": data.get("failure_reason") or "",
+        "decline_reason": data.get("decline_reason") or "",
         "message": _status_message(data, status),
     }
     out["total"] = out["charged_amount"]
@@ -266,7 +319,7 @@ def _state_to_status(state: str, *, pnr: str | None) -> str:
     if state == "completed":
         return "completed" if pnr else "needs_attention"
     if state == "awaiting_payment":
-        return "awaiting_approval"
+        return "awaiting_payment"  # a pay link the payer has not used yet
     if state in ("failed", "needs_attention"):
         return state
     return (
@@ -286,7 +339,7 @@ def _status_message(data: dict, status: str) -> str:
         data.get("question"),
         data.get("message"),
     ]
-    return " ".join(str(p) for p in parts if p)[:500]
+    return " ".join(str(p) for p in parts if p)  # full text: nothing cut
 
 
 # --- Errors ----------------------------------------------------------------
@@ -401,6 +454,21 @@ def _error_result(e: RestError, *, phase: str) -> dict:
             "message": "LetsFG needs more passenger details: "
             + (", ".join(missing) or "unspecified fields")
             + ".",
+        }
+    if e.status_code == 402 and (e.body.get("pay_url") or isinstance(e.body.get("retry"), dict)):
+        kind = "payment_required" if code == "payment_method_required" else "payment_declined"
+        return payment_link(e.body, kind=kind)
+    if e.status_code == 402 and code == "payment_declined":
+        return {
+            "status": "failed",
+            "payment_declined": True,
+            "message": _status_message(e.body, "failed") or "The payment was declined. Nothing was charged.",
+        }
+    if e.status_code == 409 and code == "too_many_attempts":
+        return {
+            "status": "payment_blocked",
+            "message": e.text
+            or "The payment was declined 5 times for this booking attempt. Nothing was charged.",
         }
     if e.status_code == 409 or "price" in code.lower():
         return {"status": "failed", "price_changed": True, "message": "The fare's price changed on LetsFG."}

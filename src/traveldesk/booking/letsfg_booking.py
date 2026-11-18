@@ -38,6 +38,16 @@ def book(picked: dict, traveller: dict, booking_id: int | None = None) -> dict:
     """Book a REST-picked offer. Offers from the retired MCP flow (no
     "backend": "rest") can't be booked here: their IDs aren't REST IDs."""
     if picked.get("backend") == "rest":
+        row = db.get(booking_id) if booking_id is not None else None
+        if row and (row.get("pay_url") or row.get("status") == "awaiting_payment"):
+            # A pay link is open for this request: paying it starts the booking.
+            # Booking again would charge the saved card again.
+            log.warning("booking row=%s refused: a LetsFG pay link is open for it", booking_id)
+            return {
+                "status": "awaiting_payment",
+                "booking_ref": row.get("booking_ref"),
+                "message": "This booking is waiting for payment on its secure link; not booking again.",
+            }
         return _book_rest(picked, traveller, booking_id)
     log.warning("booking row=%s refused: offer was not picked via the LetsFG REST API", booking_id)
     return {
@@ -165,6 +175,18 @@ def _rest_call(picked: dict, passenger: dict, booking_id, attempt: int) -> dict:
         out["passport_required_everywhere"] = _note_passport_rule(
             booking_id, fields, detail.get("server_message_full") or detail.get("server_message")
         )
+    elif out.get("status") in ("payment_link", "payment_blocked"):
+        log.warning(
+            "LetsFG book row=%s: %s booking=%s declined=%s kind=%s HTTP %s error=%s message=%s",
+            booking_id,
+            out["status"],
+            out.get("booking_ref"),
+            out.get("declined_booking_ref"),
+            out.get("payment_kind"),
+            detail.get("http_status"),
+            detail.get("error"),
+            detail.get("server_message_full") or detail.get("server_message"),
+        )
     elif detail:
         log.warning(
             "LetsFG book refused row=%s: HTTP %s error=%s fields=%s message=%s",
@@ -172,7 +194,7 @@ def _rest_call(picked: dict, passenger: dict, booking_id, attempt: int) -> dict:
             detail.get("http_status"),
             detail.get("error"),
             detail.get("fields"),
-            detail.get("server_message"),
+            detail.get("server_message_full") or detail.get("server_message"),
         )
     return out
 

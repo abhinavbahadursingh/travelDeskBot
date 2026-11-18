@@ -60,6 +60,11 @@ DRY_RUN = _opt("DRY_RUN", "true").lower() in ("1", "true", "yes")
 # Slack member IDs (comma-separated) told when a booking needs a human:
 # e.g. LetsFG still refuses after passport details were added.
 TRAVEL_ADMINS = [u.strip() for u in _opt("TRAVEL_ADMIN_SLACK_IDS").split(",") if u.strip()]
+# Slack member IDs (comma-separated) who get "Pay now" links when a card is
+# declined and LetsFG offers a secure payment page. Empty = the traveller.
+PAYMENT_APPROVERS = [u.strip() for u in _opt("PAYMENT_APPROVER_SLACK_IDS").split(",") if u.strip()]
+# How long a pay link is followed when LetsFG gives no valid_until.
+PAY_LINK_TIMEOUT_MINUTES = int(_opt("PAY_LINK_TIMEOUT_MINUTES", "60"))
 # "I don't have a passport": alternatives departing within ± this many hours.
 ALT_WINDOW_HOURS = float(_opt("ALT_WINDOW_HOURS", "3"))
 
