@@ -354,7 +354,7 @@ def _handle_decision(body, client, action, decision):
                     user=actor,
                     text=":no_entry: Only the requesting employee can confirm or cancel this booking.",
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 — silently swallowed; fixed when app.py is split
             pass
         log.warning("unauthorised %s attempt row=%s user=%s", decision, row_id, actor)
         return
@@ -684,7 +684,7 @@ def _update_card_as_done(client, body, text):
     if channel and ts:
         try:
             client.chat_update(channel=channel, ts=ts, text=f"Booking {text}", blocks=blocks)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — Slack API failure must not break the handler
             log.warning("chat_update failed: %s", e)
 
 
@@ -696,7 +696,7 @@ def _dm(client, user, text, blocks=None) -> bool:
         else:
             client.chat_postMessage(channel=channel, text=text)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — Slack API failure is reported via the return value
         log.warning("DM to %s failed: %s", user, e)
         return False
 
@@ -710,7 +710,7 @@ def run_booking(client, row_id, employee, picked, traveller):
     employee_dm = None
     try:
         employee_dm = client.conversations_open(users=employee)["channel"]["id"]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — Slack API failure must not stop the booking thread
         log.warning("open DM to employee %s failed: %s", employee, e)
 
     agent = agent_factory.get_agent()
@@ -793,7 +793,7 @@ def _notify(client, employee_dm, text):
     if employee_dm:
         try:
             client.chat_postMessage(channel=employee_dm, text=text)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — Slack API failure must not stop the booking thread
             log.warning("notify employee failed: %s", e)
 
 
@@ -805,7 +805,7 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
         time.sleep(config.POLL_SECONDS)
         try:
             st = _call_agent_status(agent, booking_ref, row_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — transient status failure: keep polling
             log.warning("status check failed for %s: %s", booking_ref, e)
             continue
         state = st.get("status")
@@ -1560,7 +1560,7 @@ def _resume_unfinished_bookings(client):
         employee = row.get("slack_user")
         try:
             employee_dm = client.conversations_open(users=employee)["channel"]["id"]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — one row's DM failure must not stop startup resume
             log.warning("resume: could not open DM to %s: %s", employee, e)
             employee_dm = None
         try:
