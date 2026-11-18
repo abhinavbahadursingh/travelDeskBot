@@ -1,4 +1,5 @@
 """DB tests: duplicate-request protection, atomic decision claim, AI usage."""
+
 from __future__ import annotations
 
 import db
@@ -71,12 +72,22 @@ def test_ai_usage_haiku_is_cheaper_than_sonnet():
 
 def test_usage_totals_aggregate():
     row_id, _ = db.new_request("UEMP1", "DEL to BOM totals", "claude")
-    db.record_ai_usage(booking_id=row_id, provider="claude",
-                       model="claude-haiku-5-5", task_kind="classify",
-                       input_tokens=200, output_tokens=5)
-    db.record_ai_usage(booking_id=row_id, provider="claude",
-                       model="claude-sonnet-5-5", task_kind="pick",
-                       input_tokens=1500, output_tokens=800)
+    db.record_ai_usage(
+        booking_id=row_id,
+        provider="claude",
+        model="claude-haiku-5-5",
+        task_kind="classify",
+        input_tokens=200,
+        output_tokens=5,
+    )
+    db.record_ai_usage(
+        booking_id=row_id,
+        provider="claude",
+        model="claude-sonnet-5-5",
+        task_kind="pick",
+        input_tokens=1500,
+        output_tokens=800,
+    )
     totals = db.usage_totals()
     assert totals["calls"] >= 2
     assert totals["input_tokens"] >= 1700

@@ -7,6 +7,7 @@ Nothing here hits Slack, Claude, or LetsFG. DRY_RUN is forced off so
 confirm() is actually invoked, but the agent module itself is a stub, so no
 real booking tool is ever called.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ import db
 
 class StubAgent:
     """Captures the 'did we actually book' signal without talking to LetsFG."""
+
     book_calls: list = []
     status_calls: list = []
 
@@ -89,26 +91,30 @@ def test_full_happy_path(monkeypatch):
     client.chat_postMessage.return_value = {"ts": "1.0", "channel": "CDM"}
 
     # --- Phase 1: search + pick, post confirmation card to the employee
-    bot_app.run_search(client, "CDM", "1.0", "UEMP1",
-                       "DEL to BOM Tue morning",
-                       {"given_name": "A", "family_name": "B",
-                        "email": "a@b", "phone": "+1"})
+    bot_app.run_search(
+        client,
+        "CDM",
+        "1.0",
+        "UEMP1",
+        "DEL to BOM Tue morning",
+        {"given_name": "A", "family_name": "B", "email": "a@b", "phone": "+1"},
+    )
 
     with db._conn() as c:
         c.row_factory = __import__("sqlite3").Row
-        row = dict(c.execute(
-            "SELECT * FROM bookings WHERE slack_user=? AND status='awaiting_confirm' "
-            "ORDER BY id DESC LIMIT 1", ("UEMP1",),
-        ).fetchone())
+        row = dict(
+            c.execute(
+                "SELECT * FROM bookings WHERE slack_user=? AND status='awaiting_confirm' "
+                "ORDER BY id DESC LIMIT 1",
+                ("UEMP1",),
+            ).fetchone()
+        )
     row_id = row["id"]
     assert row["price"] == 4200
     assert row["currency"] == "INR"
 
     # The employee must have seen exactly one confirmation card.
-    card_posts = [
-        c for c in client.chat_postMessage.call_args_list
-        if c.kwargs.get("blocks")
-    ]
+    card_posts = [c for c in client.chat_postMessage.call_args_list if c.kwargs.get("blocks")]
     assert len(card_posts) == 1
 
     # Still nothing booked yet
@@ -167,14 +173,32 @@ def test_approve_url_sets_awaiting_payment(monkeypatch):
     client.chat_postMessage.return_value = {"ts": "1.0", "channel": "CDM"}
 
     row_id, _ = db.new_request("UEMP1", "DEL CCU awaiting", "claude")
-    db.update(row_id, status="awaiting_confirm",
-              details={"status": "picked", "search_id": "S", "offer_id": "O",
-                       "summary": "x", "price": 100, "currency": "INR"})
-    bot_app.run_booking(client, row_id, "UEMP1",
-                        {"status": "picked", "search_id": "S", "offer_id": "O",
-                         "summary": "x", "price": 100, "currency": "INR"},
-                        {"given_name": "A", "family_name": "B",
-                         "email": "a@b", "phone": "+1"})
+    db.update(
+        row_id,
+        status="awaiting_confirm",
+        details={
+            "status": "picked",
+            "search_id": "S",
+            "offer_id": "O",
+            "summary": "x",
+            "price": 100,
+            "currency": "INR",
+        },
+    )
+    bot_app.run_booking(
+        client,
+        row_id,
+        "UEMP1",
+        {
+            "status": "picked",
+            "search_id": "S",
+            "offer_id": "O",
+            "summary": "x",
+            "price": 100,
+            "currency": "INR",
+        },
+        {"given_name": "A", "family_name": "B", "email": "a@b", "phone": "+1"},
+    )
     row = db.get(row_id)
     assert row["payment_status"] == "awaiting_payment"
     assert row["pnr"] is None

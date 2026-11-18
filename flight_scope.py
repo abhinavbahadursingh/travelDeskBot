@@ -10,21 +10,24 @@ country of each airport is taken from, in order:
 Anything else is "unknown", and unknown means international (the safe
 default: the traveller is asked for passport details).
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime
-from typing import Iterable
 
 # Indian airports with scheduled commercial service. Missing codes only make a
 # trip look international (passport asked), never the other way round.
-INDIA_AIRPORTS = frozenset("""
+INDIA_AIRPORTS = frozenset(
+    """
 DEL HDO DXN BOM NMI BLR MAA CCU HYD COK TRV CCJ CNN IXE TRZ IXM CJB TCR SXV PNY
 AMD BDQ STV RAJ HSR BHU JGA PBD BHJ IXK DIU IXY PNQ NAG KLH ISK IXU NDC SAG JLG SSE
 GOI GOX JAI UDR JDH BKB KQH ATQ IXC LUH IXP AIP BUP IXJ SXR IXL KUU DHM SLV DED PGH
 LKO VNS GOP IXD KNU AGR AYJ BEK HSS IDR BHO JLR GWL HJR REW RPR JRG PAB JGB
 BBI IXR PAT GAY DBR IXB DGH RDP GAU IXA IMF AJL DMU IXS JRH DIB TEZ IXI HGI PYG SHL
 IXZ AGX VGA VTZ RJA TIR CDP KJB HBX IXG MYQ GBI VDY RQY PUT
-""".split())
+""".split()
+)
 
 _COUNTRY_KEYS = {
     "origin": ("origin_country", "origin_country_code", "departure_country"),
@@ -62,8 +65,7 @@ def is_domestic_india(offer: dict | None) -> bool:
     segs = _segments(offer)
     if not segs:
         return False
-    return all(airport_country(s, side) == "IN"
-               for s in segs for side in ("origin", "destination"))
+    return all(airport_country(s, side) == "IN" for s in segs for side in ("origin", "destination"))
 
 
 def airports(offer: dict | None) -> list[str]:
@@ -105,10 +107,16 @@ def offer_price(offer: dict) -> float | None:
 
 def signature(offer: dict | None) -> tuple:
     """Identifies the same flights across two searches (offer ids differ)."""
-    return tuple((str(s.get("airline") or ""), str(s.get("flight_no") or ""),
-                  str(s.get("origin") or ""), str(s.get("destination") or ""),
-                  str(s.get("departure") or "")[:16])
-                 for s in _segments(offer or {}))
+    return tuple(
+        (
+            str(s.get("airline") or ""),
+            str(s.get("flight_no") or ""),
+            str(s.get("origin") or ""),
+            str(s.get("destination") or ""),
+            str(s.get("departure") or "")[:16],
+        )
+        for s in _segments(offer or {})
+    )
 
 
 def depart_at(offer: dict | None) -> str | None:
@@ -119,24 +127,32 @@ def depart_at(offer: dict | None) -> str | None:
 def offer_details(offer: dict) -> dict:
     """Facts about an offer that the booking flow keeps in the pick record."""
     segs = _segments(offer)
-    out_segs = [s for s in ((offer.get("outbound") or {}).get("segments") or []) if isinstance(s, dict)] \
-        if isinstance(offer.get("outbound"), dict) else segs
+    out_segs = (
+        [s for s in ((offer.get("outbound") or {}).get("segments") or []) if isinstance(s, dict)]
+        if isinstance(offer.get("outbound"), dict)
+        else segs
+    )
     first = segs[0] if segs else {}
     airline = offer.get("owner_airline") or (offer.get("airlines") or [None])[0] or first.get("airline")
     airline_name = first.get("airline_name") or airline
-    fare_type = (offer.get("conditions") or {}).get("fare_type") if isinstance(
-        offer.get("conditions"), dict) else None
+    fare_type = (
+        (offer.get("conditions") or {}).get("fare_type")
+        if isinstance(offer.get("conditions"), dict)
+        else None
+    )
     dep = depart_at(offer)
     route = airports(offer)
     stops = max(len(out_segs) - 1, 0)
     when = ""
     if dep:
         try:
-            when =datetime.fromisoformat(dep).strftime("%d %b %H:%M") + " "
+            when = datetime.fromisoformat(dep).strftime("%d %b %H:%M") + " "
         except ValueError:
             when = ""
-    summary = (f"{airline_name or 'Flight'} · {when}{' → '.join(route)} · "
-               f"{'nonstop' if stops == 0 else f'{stops} stop' + ('s' if stops > 1 else '')}")
+    summary = (
+        f"{airline_name or 'Flight'} · {when}{' → '.join(route)} · "
+        f"{'nonstop' if stops == 0 else f'{stops} stop' + ('s' if stops > 1 else '')}"
+    )
     return {
         "domestic": is_domestic_india(offer),
         "airports": route,

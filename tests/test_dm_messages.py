@@ -1,4 +1,5 @@
 """Messages in the bot's DM start a request just like /traveldesk."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -15,9 +16,13 @@ PROFILE = {"given_name": "Raj", "family_name": "Gupta", "email": "raj@example.co
 @pytest.fixture
 def threads(monkeypatch):
     started = []
-    monkeypatch.setattr(bot_app.threading, "Thread",
-                        lambda target=None, args=(), kwargs=None, **_k: SimpleNamespace(
-                            start=lambda: started.append((target, args))))
+    monkeypatch.setattr(
+        bot_app.threading,
+        "Thread",
+        lambda target=None, args=(), kwargs=None, **_k: SimpleNamespace(
+            start=lambda: started.append((target, args))
+        ),
+    )
     return started
 
 
@@ -29,8 +34,15 @@ def client():
 
 
 def _dm(text, **extra):
-    return {"type": "message", "channel_type": "im", "channel": "DCHAN",
-            "user": "UDM1", "text": text, "ts": "1.0", **extra}
+    return {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "DCHAN",
+        "user": "UDM1",
+        "text": text,
+        "ts": "1.0",
+        **extra,
+    }
 
 
 def _texts(client):
@@ -62,12 +74,21 @@ def test_dm_from_unknown_user_is_told_to_ask_admin(threads, client):
     assert "UNOBODY" in _texts(client)[0]
 
 
-@pytest.mark.parametrize("event", [
-    _dm("Dry run — would book …", bot_id="B1"),               # the bot's own post
-    _dm("edited", subtype="message_changed"),
-    {"type": "message", "channel_type": "channel", "channel": "C1", "user": "UDM1",
-     "text": "DEL to BOM", "ts": "1.0"},                       # public channel
-])
+@pytest.mark.parametrize(
+    "event",
+    [
+        _dm("Dry run — would book …", bot_id="B1"),  # the bot's own post
+        _dm("edited", subtype="message_changed"),
+        {
+            "type": "message",
+            "channel_type": "channel",
+            "channel": "C1",
+            "user": "UDM1",
+            "text": "DEL to BOM",
+            "ts": "1.0",
+        },  # public channel
+    ],
+)
 def test_ignored_messages(threads, client, event):
     bot_app.on_message(event, client)
     assert threads == []

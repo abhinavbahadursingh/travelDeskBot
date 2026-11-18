@@ -1,4 +1,5 @@
 """Loads settings from .env and travellers.json."""
+
 import json
 import os
 from pathlib import Path
@@ -58,7 +59,7 @@ TRAVEL_ADMINS = [u.strip() for u in _opt("TRAVEL_ADMIN_SLACK_IDS").split(",") if
 # "I don't have a passport": alternatives departing within ± this many hours.
 ALT_WINDOW_HOURS = float(_opt("ALT_WINDOW_HOURS", "3"))
 
-POLL_SECONDS =int(_opt("POLL_SECONDS", "45"))
+POLL_SECONDS = int(_opt("POLL_SECONDS", "45"))
 POLL_MAX_MINUTES = int(_opt("POLL_MAX_MINUTES", "30"))
 
 DATABASE_PATH = _opt("DATABASE_PATH", str(BASE / "traveldesk.db"))
@@ -67,7 +68,5 @@ _travellers_file = BASE / "travellers.json"
 if not _travellers_file.exists():
     raise SystemExit("Create travellers.json (copy travellers.example.json)")
 TRAVELLERS: dict = {
-    k: v
-    for k, v in json.loads(_travellers_file.read_text()).items()
-    if not k.startswith("_")
+    k: v for k, v in json.loads(_travellers_file.read_text()).items() if not k.startswith("_")
 }

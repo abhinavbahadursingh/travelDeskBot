@@ -18,13 +18,13 @@ Claude never calls LetsFG itself: Python searches via the LetsFG REST API,
 Claude reads the request and chooses one offer, and booking is deterministic
 Python (see letsfg_booking).
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
 from datetime import date
-from typing import Any
 
 import anthropic
 
@@ -53,9 +53,15 @@ def _client() -> anthropic.Anthropic:
 
 # Task kinds that are always cheap-model (Haiku). Anything not listed
 # defaults to the complex-model (Sonnet).
-_HAIKU_TASKS = frozenset({
-    "classify", "intent", "extract", "status", "format",
-})
+_HAIKU_TASKS = frozenset(
+    {
+        "classify",
+        "intent",
+        "extract",
+        "status",
+        "format",
+    }
+)
 
 # Heuristics: these words strongly suggest a complex request and force
 # Sonnet regardless of the classifier.
@@ -73,9 +79,7 @@ def _classify_complexity(request: str, booking_id: int | None = None) -> str:
     if _COMPLEX_SIGNALS.search(request or ""):
         return "complex"
     # Short, clearly-structured one-way or round-trip → simple.
-    if len(request) <= 80 and re.search(
-        r"\b[A-Z]{3}\b.*\b(to|->|→)\b", request, re.IGNORECASE
-    ):
+    if len(request) <= 80 and re.search(r"\b[A-Z]{3}\b.*\b(to|->|→)\b", request, re.IGNORECASE):
         return "simple"
 
     system = (
@@ -92,8 +96,7 @@ def _classify_complexity(request: str, booking_id: int | None = None) -> str:
             system=system,
             messages=[{"role": "user", "content": request or ""}],
         )
-        _record_usage(resp, task_kind="classify",
-                      model=config.CLAUDE_HAIKU_MODEL, booking_id=booking_id)
+        _record_usage(resp, task_kind="classify", model=config.CLAUDE_HAIKU_MODEL, booking_id=booking_id)
         text = "".join(getattr(b, "text", "") for b in resp.content if b.type == "text").strip().lower()
         if "complex" in text:
             return "complex"
@@ -103,8 +106,7 @@ def _classify_complexity(request: str, booking_id: int | None = None) -> str:
         return "complex"
 
 
-def pick_model_for(task_kind: str, request: str = "",
-                   booking_id: int | None = None) -> str:
+def pick_model_for(task_kind: str, request: str = "", booking_id: int | None = None) -> str:
     """Return the Anthropic model id to use for this task.
 
     Payment-affecting work (confirm / book) always runs on Sonnet. Short,
@@ -124,8 +126,7 @@ def pick_model_for(task_kind: str, request: str = "",
 # ---------------------------------------------------------------------------
 
 
-def _record_usage(resp, *, task_kind: str, model: str,
-                  booking_id: int | None) -> None:
+def _record_usage(resp, *, task_kind: str, model: str, booking_id: int | None) -> None:
     """Pull token usage off a Messages response and log it to ai_usage."""
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -171,19 +172,24 @@ Nobody reads your text except the script, so:
 # ---------------------------------------------------------------------------
 
 
-def _plain_json(model: str, system: str, prompt: str, *, task_kind: str,
-                booking_id: int | None, max_tokens: int = 2000) -> dict:
+def _plain_json(
+    model: str, system: str, prompt: str, *, task_kind: str, booking_id: int | None, max_tokens: int = 2000
+) -> dict:
     """Tool-free Claude call that ends in one JSON object."""
     resp = _client().messages.create(
-        model=model, max_tokens=max_tokens, system=system,
+        model=model,
+        max_tokens=max_tokens,
+        system=system,
         messages=[{"role": "user", "content": prompt}],
     )
     _record_usage(resp, task_kind=task_kind, model=model, booking_id=booking_id)
     text = "".join(getattr(b, "text", "") for b in resp.content if b.type == "text")
     out = _extract_json(text)
     if out.get("status") == "failed" and getattr(resp, "stop_reason", None) == "max_tokens":
-        return {"status": "failed",
-                "message": f"Claude's {task_kind} answer was cut off at {max_tokens} tokens."}
+        return {
+            "status": "failed",
+            "message": f"Claude's {task_kind} answer was cut off at {max_tokens} tokens.",
+        }
     return out
 
 
@@ -216,18 +222,24 @@ Final JSON keys:
 origin, destination: IATA codes,
 date_from: YYYY-MM-DD departure date, return_from: YYYY-MM-DD or null,
 status: "ok" or "need_info", message: short reason if need_info"""
-    ex = _plain_json(config.CLAUDE_HAIKU_MODEL, extract_system, request,
-                     task_kind="extract", booking_id=booking_id)
+    ex = _plain_json(
+        config.CLAUDE_HAIKU_MODEL, extract_system, request, task_kind="extract", booking_id=booking_id
+    )
     origin = str(ex.get("origin") or "").upper()
     dest = str(ex.get("destination") or "").upper()
     dep = str(ex.get("date_from") or "")
     ret = ex.get("return_from") or None
     if ex.get("status") == "need_info" or not (
-        _IATA.match(origin) and _IATA.match(dest) and _DATE.match(dep)
+        _IATA.match(origin)
+        and _IATA.match(dest)
+        and _DATE.match(dep)
         and (ret is None or _DATE.match(str(ret)))
     ):
-        return {**base, "status": "need_info",
-                "message": ex.get("message") or "Couldn't work out origin, destination and date."}
+        return {
+            **base,
+            "status": "need_info",
+            "message": ex.get("message") or "Couldn't work out origin, destination and date.",
+        }
 
     search = letsfg_rest.search_flights(origin, dest, dep, return_from=ret)
     if search["status"] != "ok":
@@ -235,19 +247,24 @@ status: "ok" or "need_info", message: short reason if need_info"""
     route = f"{origin} → {dest} on {dep}"
     all_offers = [o for o in search["offers"] if isinstance(o, dict) and o.get("id")]
     if not all_offers:
-        return {**base, "status": "no_match",
-                "message": f"LetsFG found no flights for {route}. If those airport codes "
-                           "look wrong, try again with codes, e.g. `/traveldesk DEL to BOM 22 Nov`."}
+        return {
+            **base,
+            "status": "no_match",
+            "message": f"LetsFG found no flights for {route}. If those airport codes "
+            "look wrong, try again with codes, e.g. `/traveldesk DEL to BOM 22 Nov`.",
+        }
     offers = all_offers
     if config.MAX_PRICE:
-        offers = [o for o in offers
-                  if (p := _offer_price(o)) is not None and p <= config.MAX_PRICE]
+        offers = [o for o in offers if (p := _offer_price(o)) is not None and p <= config.MAX_PRICE]
     if not offers:
         cheapest = min((p for o in all_offers if (p := _offer_price(o)) is not None), default=None)
         cheapest_txt = f" Cheapest found: {cheapest:.0f} {search['currency']}." if cheapest else ""
-        return {**base, "status": "no_match",
-                "message": f"All {len(all_offers)} flights for {route} are above MAX_PRICE "
-                           f"({config.MAX_PRICE:.0f} {config.CURRENCY}).{cheapest_txt}"}
+        return {
+            **base,
+            "status": "no_match",
+            "message": f"All {len(all_offers)} flights for {route} are above MAX_PRICE "
+            f"({config.MAX_PRICE:.0f} {config.CURRENCY}).{cheapest_txt}",
+        }
 
     model = pick_model_for("pick", request, booking_id=booking_id)
     choose_system = f"""{_COMMON}
@@ -259,20 +276,32 @@ status: "picked" or "no_match"
 offer_id: the chosen offer's "id", copied exactly
 summary: one line e.g. "IndiGo 6E-6218 · 24 Nov 06:05 DEL → 08:25 BOM · nonstop"
 message: reason in under 20 words"""
-    prompt = (f"Request: {request}\nOffers JSON:\n"
-              f"{json.dumps(offers, ensure_ascii=False, default=str)[:60000]}")
-    choice = _plain_json(model, choose_system, prompt,
-                         task_kind="pick", booking_id=booking_id)
+    prompt = (
+        f"Request: {request}\nOffers JSON:\n{json.dumps(offers, ensure_ascii=False, default=str)[:60000]}"
+    )
+    choice = _plain_json(model, choose_system, prompt, task_kind="pick", booking_id=booking_id)
     if choice.get("status") == "failed":
-        return {**base, "status": "failed", "model": model,
-                "message": choice.get("message") or "Couldn't read Claude's choice."}
+        return {
+            **base,
+            "status": "failed",
+            "model": model,
+            "message": choice.get("message") or "Couldn't read Claude's choice.",
+        }
     if choice.get("status") != "picked":
-        return {**base, "status": "no_match", "model": model,
-                "message": choice.get("message") or "No offer matched the rule."}
+        return {
+            **base,
+            "status": "no_match",
+            "model": model,
+            "message": choice.get("message") or "No offer matched the rule.",
+        }
     chosen = next((o for o in offers if str(o["id"]) == str(choice.get("offer_id"))), None)
     if chosen is None:
-        return {**base, "status": "failed", "model": model,
-                "message": "Model chose an offer that is not in the search results."}
+        return {
+            **base,
+            "status": "failed",
+            "model": model,
+            "message": "Model chose an offer that is not in the search results.",
+        }
     return {
         **base,
         "status": "picked",
@@ -314,43 +343,46 @@ def confirm(picked: dict, traveller: dict, booking_id: int | None = None) -> dic
     booking call, so a Slack retry or process restart cannot double-book.
     """
     if config.DRY_RUN:
-        return {**picked, "status": "picked",
-                "message": "DRY_RUN is on: not booking.", "provider": _PROVIDER}
+        return {**picked, "status": "picked", "message": "DRY_RUN is on: not booking.", "provider": _PROVIDER}
 
     search_id = picked.get("search_id")
     offer_id = picked.get("offer_id")
     if not (search_id and offer_id):
-        return {"status": "failed",
-                "message": "Missing search_id/offer_id from the pick step.",
-                "provider": _PROVIDER}
+        return {
+            "status": "failed",
+            "message": "Missing search_id/offer_id from the pick step.",
+            "provider": _PROVIDER,
+        }
 
     err = letsfg_booking.validate_traveller(traveller)
     if err:
-        return {**picked, "status": "need_info",
-                "message": err, "provider": _PROVIDER}
+        return {**picked, "status": "need_info", "message": err, "provider": _PROVIDER}
 
     # Idempotency guard — never call book_flight twice for the same row.
     if booking_id is not None:
         existing = db.get(booking_id) or {}
         if existing.get("booking_ref"):
-            return {**picked,
-                    "status": existing.get("status") or "awaiting_approval",
-                    "booking_ref": existing["booking_ref"],
-                    "message": "booking already issued; skipping duplicate book_flight call",
-                    "provider": _PROVIDER}
+            return {
+                **picked,
+                "status": existing.get("status") or "awaiting_approval",
+                "booking_ref": existing["booking_ref"],
+                "message": "booking already issued; skipping duplicate book_flight call",
+                "provider": _PROVIDER,
+            }
         # confirmed → booking_started atomically. If the row isn't in
         # 'confirmed' any more, someone else is handling it.
         if not db.claim_booking_start(booking_id):
             latest = db.get(booking_id) or {}
-            return {**picked,
-                    "status": latest.get("status") or "failed",
-                    "booking_ref": latest.get("booking_ref"),
-                    "message": "another handler is already booking this row",
-                    "provider": _PROVIDER}
+            return {
+                **picked,
+                "status": latest.get("status") or "failed",
+                "booking_ref": latest.get("booking_ref"),
+                "message": "another handler is already booking this row",
+                "provider": _PROVIDER,
+            }
 
     out = letsfg_booking.book(picked, traveller, booking_id)
-    merged = {**picked, **out, "provider": _PROVIDER,
-              "model": config.CLAUDE_SONNET_MODEL}
+    merged = {**picked, **out, "provider": _PROVIDER, "model": config.CLAUDE_SONNET_MODEL}
     return merged
 
 

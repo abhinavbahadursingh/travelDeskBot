@@ -7,6 +7,7 @@ escalation, and document collection + one retry with no duplicate booking.
 Synthetic data only. LetsFG HTTP and Slack are stubbed; nothing leaves the
 machine.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,13 +24,25 @@ import letsfg_rest
 import secure_store
 import traveller_profile as tp
 from tests.test_need_info_flow import (  # noqa: F401 — fixtures
-    ADDRESS, BASIC, PASSPORT, PASSPORT_NO, ROW24, Script, _docs_view, client, picked, texts,
+    ADDRESS,
+    BASIC,
+    PASSPORT,
+    PASSPORT_NO,
+    ROW24,
+    Script,
+    _docs_view,
+    client,
+    picked,
+    texts,
 )
 
-EVERYONE = ("The travellers are missing details an airline checkout requires: "
-            + ", ".join(ROW24) + ". Supply them and call again. A passport is needed for every "
-            "traveller. Why a passport: the airline's checkout demands the document for all "
-            "bookings made through this channel. END-OF-MESSAGE")
+EVERYONE = (
+    "The travellers are missing details an airline checkout requires: "
+    + ", ".join(ROW24)
+    + ". Supply them and call again. A passport is needed for every "
+    "traveller. Why a passport: the airline's checkout demands the document for all "
+    "bookings made through this channel. END-OF-MESSAGE"
+)
 
 
 def refusal(fields=ROW24, message=""):
@@ -81,9 +94,17 @@ def new_row(uid, **details):
 def restricted_docs_row(uid):
     db.record_restriction(uid, "letsfg", db.PASSPORT_REQUIRED, fields=ROW24, source="test")
     rid = new_row(uid)
-    db.update(rid, status="need_documents", details=picked(
-        domestic=True, missing_fields=ROW24, required_fields=sorted(ROW24), book_attempt=1,
-        passport_required_everywhere=True))
+    db.update(
+        rid,
+        status="need_documents",
+        details=picked(
+            domestic=True,
+            missing_fields=ROW24,
+            required_fields=sorted(ROW24),
+            book_attempt=1,
+            passport_required_everywhere=True,
+        ),
+    )
     return rid
 
 
@@ -92,14 +113,15 @@ def restricted_docs_row(uid):
 
 def test_full_need_info_message_is_logged_and_redacted(user, monkeypatch, caplog):
     # LetsFG echoes passenger data back; none of it may reach the log.
-    echoed = EVERYONE + f" (for {BASIC['given_name']} {BASIC['family_name']}, " \
-                        f"{BASIC['email']}, +91 98000 00000)"
+    echoed = (
+        EVERYONE + f" (for {BASIC['given_name']} {BASIC['family_name']}, {BASIC['email']}, +91 98000 00000)"
+    )
     assert len(echoed) > 300
     Script(monkeypatch, refusal(message=echoed))
     with caplog.at_level(logging.WARNING, logger="letsfg_booking"):
         letsfg_booking.book(picked(domestic=True), dict(BASIC), new_row(user))
     line = next(r.getMessage() for r in caplog.records if "LetsFG need_info" in r.getMessage())
-    assert "END-OF-MESSAGE" in line            # no 300-character truncation
+    assert "END-OF-MESSAGE" in line  # no 300-character truncation
     assert "Why a passport" in line
     for secret in (BASIC["email"], BASIC["given_name"], BASIC["family_name"], "98000"):
         assert secret not in line
@@ -178,9 +200,21 @@ def _buttons(blocks):
 
 def test_restricted_need_info_hides_alternatives(user, client, admins):
     rid = new_row(user)
-    bot_app._handle_book_result(client, rid, user, "DCH", picked(domestic=True), {
-        "status": "need_info", "missing_fields": ROW24, "required_fields": sorted(ROW24),
-        "book_attempt": 0, "escalate": False, "passport_required_everywhere": True})
+    bot_app._handle_book_result(
+        client,
+        rid,
+        user,
+        "DCH",
+        picked(domestic=True),
+        {
+            "status": "need_info",
+            "missing_fields": ROW24,
+            "required_fields": sorted(ROW24),
+            "book_attempt": 0,
+            "escalate": False,
+            "passport_required_everywhere": True,
+        },
+    )
     call = client.chat_postMessage.call_args.kwargs
     assert _buttons(call["blocks"]) == ["provide_documents", "request_manual_booking"]
     assert "requires passport details even for domestic flights" in call["text"]
@@ -190,17 +224,31 @@ def test_restricted_need_info_hides_alternatives(user, client, admins):
 
 def test_unrestricted_need_info_still_offers_alternatives(user, client):
     rid = new_row(user)
-    bot_app._handle_book_result(client, rid, user, "DCH", picked(domestic=True), {
-        "status": "need_info", "missing_fields": ROW24, "required_fields": sorted(ROW24),
-        "book_attempt": 0, "escalate": False})
+    bot_app._handle_book_result(
+        client,
+        rid,
+        user,
+        "DCH",
+        picked(domestic=True),
+        {
+            "status": "need_info",
+            "missing_fields": ROW24,
+            "required_fields": sorted(ROW24),
+            "book_attempt": 0,
+            "escalate": False,
+        },
+    )
     assert _buttons(client.chat_postMessage.call_args.kwargs["blocks"]) == [
-        "provide_documents", "no_passport"]
+        "provide_documents",
+        "no_passport",
+    ]
 
 
 def test_restricted_documents_modal_offers_admin_not_alternatives(user, client):
     rid = restricted_docs_row(user)
-    bot_app._open_documents_modal({"user": {"id": user}, "trigger_id": "T"}, client,
-                                  {"value": json.dumps({"row": rid})})
+    bot_app._open_documents_modal(
+        {"user": {"id": user}, "trigger_id": "T"}, client, {"value": json.dumps({"row": rid})}
+    )
     view = client.views_open.call_args.kwargs["view"]
     assert [b["block_id"] for b in view["blocks"] if b["type"] == "input"] == ROW24
     assert _buttons(view["blocks"]) == ["request_manual_booking"]
@@ -208,8 +256,11 @@ def test_restricted_documents_modal_offers_admin_not_alternatives(user, client):
 
 def test_old_no_passport_button_does_not_search_when_restricted(user, client, admins, monkeypatch):
     rid = restricted_docs_row(user)
-    monkeypatch.setattr(bot_app, "_search_same_route",
-                        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")))
+    monkeypatch.setattr(
+        bot_app,
+        "_search_same_route",
+        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")),
+    )
     bot_app._handle_no_passport({"user": {"id": user}}, client, {"value": json.dumps({"row": rid})})
     assert db.get(rid)["status"] == "needs_attention"
     assert texts(client, "D-UADMIN")
@@ -218,8 +269,11 @@ def test_old_no_passport_button_does_not_search_when_restricted(user, client, ad
 def test_find_alternatives_stops_when_restricted(user, client, admins, monkeypatch):
     rid = restricted_docs_row(user)
     db.update(rid, status="no_passport")
-    monkeypatch.setattr(bot_app, "_search_same_route",
-                        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")))
+    monkeypatch.setattr(
+        bot_app,
+        "_search_same_route",
+        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")),
+    )
     bot_app.find_alternatives(client, rid, user)
     assert db.get(rid)["status"] == "needs_attention"
 
@@ -244,17 +298,18 @@ def test_manual_booking_request_escalates_once(user, client, admins):
     assert len(admin) == 1 and "book this flight manually" in admin[0] and f"#{rid}" in admin[0]
     assert PASSPORT_NO not in admin[0]
     mine = texts(client, f"D-{user}")
-    assert any("Nothing was booked or charged" in t and "travel admin has been told" in t
-               for t in mine)
+    assert any("Nothing was booked or charged" in t and "travel admin has been told" in t for t in mine)
     assert action  # button payload carries only the row id
 
 
 def test_manual_booking_ignores_other_users(user, client, admins):
     rid = restricted_docs_row(user)
-    found = bot_app._row_for_actor({"user": {"id": "UOTHER"}},
-                                   {"value": json.dumps({"row": rid}),
-                                    "action_id": "request_manual_booking"}, client,
-                                   expect=("need_documents",))
+    found = bot_app._row_for_actor(
+        {"user": {"id": "UOTHER"}},
+        {"value": json.dumps({"row": rid}), "action_id": "request_manual_booking"},
+        client,
+        expect=("need_documents",),
+    )
     assert found is None and db.get(rid)["status"] == "need_documents"
 
 
@@ -271,11 +326,15 @@ def test_manual_booking_without_admin_configured_says_so(user, client, monkeypat
 def test_documents_saved_then_single_retry_books_once(user, client, live, monkeypatch):
     rid = restricted_docs_row(user)
     started = []
-    monkeypatch.setattr(bot_app.threading, "Thread", lambda target=None, args=(), **_k:
-                        MagicMock(start=lambda: started.append((target, args))))
+    monkeypatch.setattr(
+        bot_app.threading,
+        "Thread",
+        lambda target=None, args=(), **_k: MagicMock(start=lambda: started.append((target, args))),
+    )
     ack = MagicMock()
-    bot_app._handle_documents_submission(ack, {"user": {"id": user}}, client,
-                                         _docs_view(rid, ROW24, **PASSPORT, **ADDRESS))
+    bot_app._handle_documents_submission(
+        ack, {"user": {"id": user}}, client, _docs_view(rid, ROW24, **PASSPORT, **ADDRESS)
+    )
     ack.assert_called_once_with()
     saved = secure_store.load(user)
     assert saved["passport_number"] == PASSPORT_NO and saved["address_city"] == "New Delhi"
@@ -315,14 +374,28 @@ def test_dry_run_never_calls_letsfg_during_document_retry(user, client, monkeypa
 def test_restriction_is_derived_from_existing_history(user, client, admins, monkeypatch):
     """Travellers already refused by 2+ airlines (before this rule existed)."""
     for airline in ("6E", "AI"):
-        db.log_need_info(booking_id=new_row(user), airline=airline, airline_name=airline,
-                         fare_type="base_fare", route="DEL-BOM", domestic=True, price=1,
-                         currency="INR", fields=ROW24)
+        db.log_need_info(
+            booking_id=new_row(user),
+            airline=airline,
+            airline_name=airline,
+            fare_type="base_fare",
+            route="DEL-BOM",
+            domestic=True,
+            price=1,
+            currency="INR",
+            fields=ROW24,
+        )
     rid = new_row(user)
-    db.update(rid, status="need_documents", details=picked(
-        domestic=True, missing_fields=ROW24, required_fields=sorted(ROW24), book_attempt=1))
-    monkeypatch.setattr(bot_app, "_search_same_route",
-                        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")))
+    db.update(
+        rid,
+        status="need_documents",
+        details=picked(domestic=True, missing_fields=ROW24, required_fields=sorted(ROW24), book_attempt=1),
+    )
+    monkeypatch.setattr(
+        bot_app,
+        "_search_same_route",
+        lambda *a: (_ for _ in ()).throw(AssertionError("searched alternatives")),
+    )
     bot_app._handle_no_passport({"user": {"id": user}}, client, {"value": json.dumps({"row": rid})})
     assert db.get(rid)["status"] == "needs_attention"
     r = db.get_restriction(user, "letsfg", db.PASSPORT_REQUIRED)

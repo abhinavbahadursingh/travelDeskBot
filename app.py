@@ -12,6 +12,7 @@ Flow:
      URL we post it to the employee; otherwise we poll to the PNR.
   6. The employee is never told payment has succeeded until LetsFG confirms it.
 """
+
 from __future__ import annotations
 
 import json
@@ -80,8 +81,10 @@ def on_message(event, client):
         return  # edits, deletions, joins, and messages posted by bots (incl. this one)
     if event.get("thread_ts") and event.get("thread_ts") != event.get("ts"):
         client.chat_postMessage(
-            channel=event["channel"], thread_ts=event["thread_ts"],
-            text="To start a new request, send it as a new message (not a thread reply).")
+            channel=event["channel"],
+            thread_ts=event["thread_ts"],
+            text="To start a new request, send it as a new message (not a thread reply).",
+        )
         return
     start_request(client, event["user"], (event.get("text") or "").strip(), event["channel"])
 
@@ -104,7 +107,7 @@ def start_request(client, user, text, dm):
         client.chat_postMessage(
             channel=dm,
             text=":warning: Your travellers.json entry needs fixing before I can search — "
-                 f"{search_check.summary()}. Ask the admin to update it.",
+            f"{search_check.summary()}. Ask the admin to update it.",
         )
         return
     # Sensitive fields never reach the AI provider.
@@ -116,13 +119,11 @@ def start_request(client, user, text, dm):
         client.chat_postMessage(
             channel=dm,
             text=f":warning: You already have a request in flight for this (id {dup['id']}, status `{dup['status']}`). "
-                 "Wait for that one to finish or cancel it before trying again.",
+            "Wait for that one to finish or cancel it before trying again.",
         )
         return
 
-    first = client.chat_postMessage(
-        channel=dm, text=f":airplane: *{text}*\nSearching flights… (2–3 minutes)"
-    )
+    first = client.chat_postMessage(channel=dm, text=f":airplane: *{text}*\nSearching flights… (2–3 minutes)")
     threading.Thread(
         target=run_search,
         args=(client, dm, first["ts"], user, text, traveller),
@@ -153,8 +154,12 @@ def run_search(client, channel, thread_ts, user, text, traveller):
     status = picked.get("status")
     if status != "picked":
         db.update(row_id, status=status or "failed", details=picked)
-        say(client, channel, thread_ts,
-            f":warning: Not booked ({status}). {picked.get('message','')}\n{picked.get('summary','')}")
+        say(
+            client,
+            channel,
+            thread_ts,
+            f":warning: Not booked ({status}). {picked.get('message', '')}\n{picked.get('summary', '')}",
+        )
         return
 
     price = picked.get("price")
@@ -200,7 +205,7 @@ def _post_confirmation_card(client, row_id, employee, request_text, picked, empl
     try:
         msg = client.chat_postMessage(
             channel=employee_dm,
-            text=f"Confirm your travel booking: {picked.get('summary','')}",
+            text=f"Confirm your travel booking: {picked.get('summary', '')}",
             blocks=blocks,
         )
         db.update(row_id, manager_message_ts=msg["ts"], manager_channel=employee_dm)
@@ -213,19 +218,25 @@ def _passport_warning(picked, employee=None) -> str | None:
     if not picked.get("domestic"):
         return None  # international already collects the passport
     if employee and letsfg_booking.passport_restriction(employee):
-        return (":warning: LetsFG currently requires passport details even for domestic "
-                "flights. If yours aren't saved yet, you'll be asked for them after you confirm.")
+        return (
+            ":warning: LetsFG currently requires passport details even for domestic "
+            "flights. If yours aren't saved yet, you'll be asked for them after you confirm."
+        )
     try:
         seen = db.passport_history(picked.get("airline"), picked.get("fare_type"))
     except Exception:  # noqa: BLE001
         return None
     name = picked.get("airline_name") or picked.get("airline")
     if seen == "fare":
-        return (f":warning: {name} has asked for passport details on this fare type before, "
-                "even within India. You may be asked for them.")
+        return (
+            f":warning: {name} has asked for passport details on this fare type before, "
+            "even within India. You may be asked for them."
+        )
     if seen == "airline":
-        return (f":warning: Some {name} fares have asked for passport details, even within "
-                "India. You may be asked for them.")
+        return (
+            f":warning: Some {name} fares have asked for passport details, even within "
+            "India. You may be asked for them."
+        )
     return None
 
 
@@ -233,14 +244,14 @@ def _confirm_blocks(row_id, employee, request_text, picked, traveller):
     price = picked.get("price")
     currency = picked.get("currency") or config.CURRENCY
     price_line = f"{price} {currency}" if price is not None else "price n/a"
-    traveller_line = f"{traveller.get('given_name','')} {traveller.get('family_name','')}".strip()
+    traveller_line = f"{traveller.get('given_name', '')} {traveller.get('family_name', '')}".strip()
     offer_link = picked.get("offer_link")
     value = json.dumps({"row": row_id})
     fields = [
         {"type": "mrkdwn", "text": f"*Traveller*\n{traveller_line}"},
         {"type": "mrkdwn", "text": f"*Price*\n{price_line}"},
         {"type": "mrkdwn", "text": f"*Request*\n{request_text}"},
-        {"type": "mrkdwn", "text": f"*Model*\n`{picked.get('model') or picked.get('provider','?')}`"},
+        {"type": "mrkdwn", "text": f"*Model*\n`{picked.get('model') or picked.get('provider', '?')}`"},
     ]
     blocks = [
         {
@@ -249,15 +260,17 @@ def _confirm_blocks(row_id, employee, request_text, picked, traveller):
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{picked.get('summary','(no summary)')}*"},
+            "text": {"type": "mrkdwn", "text": f"*{picked.get('summary', '(no summary)')}*"},
         },
         {"type": "section", "fields": fields},
     ]
     if offer_link:
-        blocks.append({
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"<{offer_link}|View offer on LetsFG>"}],
-        })
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"<{offer_link}|View offer on LetsFG>"}],
+            }
+        )
     if picked.get("notice"):
         blocks.insert(1, {"type": "section", "text": {"type": "mrkdwn", "text": picked["notice"]}})
     warning = _passport_warning(picked, employee)
@@ -268,32 +281,34 @@ def _confirm_blocks(row_id, employee, request_text, picked, traveller):
         if not config.DRY_RUN
         else f"DRY_RUN is on. This will search and pick only, no real booking for {price_line}."
     )
-    blocks.append({
-        "type": "actions",
-        "block_id": f"traveldesk_decision_{row_id}",
-        "elements": [
-            {
-                "type": "button",
-                "style": "primary",
-                "text": {"type": "plain_text", "text": "Confirm & book"},
-                "action_id": "confirm_booking",
-                "value": value,
-                "confirm": {
-                    "title": {"type": "plain_text", "text": "Confirm booking?"},
-                    "text": {"type": "mrkdwn", "text": confirm_text},
-                    "confirm": {"type": "plain_text", "text": "Confirm"},
-                    "deny": {"type": "plain_text", "text": "Back"},
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": f"traveldesk_decision_{row_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "text": {"type": "plain_text", "text": "Confirm & book"},
+                    "action_id": "confirm_booking",
+                    "value": value,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Confirm booking?"},
+                        "text": {"type": "mrkdwn", "text": confirm_text},
+                        "confirm": {"type": "plain_text", "text": "Confirm"},
+                        "deny": {"type": "plain_text", "text": "Back"},
+                    },
                 },
-            },
-            {
-                "type": "button",
-                "style": "danger",
-                "text": {"type": "plain_text", "text": "Cancel"},
-                "action_id": "cancel_booking",
-                "value": value,
-            },
-        ],
-    })
+                {
+                    "type": "button",
+                    "style": "danger",
+                    "text": {"type": "plain_text", "text": "Cancel"},
+                    "action_id": "cancel_booking",
+                    "value": value,
+                },
+            ],
+        }
+    )
     return blocks
 
 
@@ -382,10 +397,19 @@ def _handle_decision(body, client, action, decision):
 # ---------------------------------------------------------------------------
 
 _DATE_FIELDS = ("date_of_birth", "passport_expiry", "passport_issue")
-_MAX_LEN = {"nationality": 2, "passport_country": 2, "passport_number": 20,
-            "phone": 20, "given_name": 50, "family_name": 50,
-            "address_line1": 100, "address_city": 50, "address_postal": 10,
-            "address_country": 2, "phone_country": 2}
+_MAX_LEN = {
+    "nationality": 2,
+    "passport_country": 2,
+    "passport_number": 20,
+    "phone": 20,
+    "given_name": 50,
+    "family_name": 50,
+    "address_line1": 100,
+    "address_city": 50,
+    "address_postal": 10,
+    "address_country": 2,
+    "phone_country": 2,
+}
 _DOMESTIC_ID_LINE = "Carry the ID you selected (or use DigiYatra) at the airport."
 _DOMESTIC_LABELS = {
     "given_name": "First name (exactly as on your ID)",
@@ -396,9 +420,12 @@ _DOMESTIC_LABELS = {
 def _validate_for_trip(profile, picked):
     """Domestic India trips need the basic profile; others need the passport too."""
     return traveller_profile.validate(
-        profile, for_booking=True, travel_date=picked.get("depart_date"),
+        profile,
+        for_booking=True,
+        travel_date=picked.get("depart_date"),
         domestic=bool(picked.get("domestic")),
-        last_flight_date=picked.get("last_flight_date"))
+        last_flight_date=picked.get("last_flight_date"),
+    )
 
 
 def _request_passenger_details(client, row, trigger_id) -> bool:
@@ -415,25 +442,32 @@ def _request_passenger_details(client, row, trigger_id) -> bool:
     problems = res.problem_fields()
     admin_fields = [f for f in problems if f not in traveller_profile.MODAL_FIELDS]
     if admin_fields:
-        _dm(client, employee,
+        _dm(
+            client,
+            employee,
             ":warning: Can't book yet — your travellers.json entry needs: "
             + ", ".join(traveller_profile.LABELS.get(f, f) for f in admin_fields)
-            + ". Ask the admin to update it, then press Confirm again.")
+            + ". Ask the admin to update it, then press Confirm again.",
+        )
         return True
     if not secure_store.is_configured():
         log.warning("passenger details needed for row %s but secure storage is not configured", row["id"])
-        _dm(client, employee,
+        _dm(
+            client,
+            employee,
             ":warning: Can't collect passport details: secure storage isn't configured "
-            "(TRAVELDESK_DATA_KEY). Ask the admin.")
+            "(TRAVELDESK_DATA_KEY). Ask the admin.",
+        )
         return True
     if not trigger_id:
         _dm(client, employee, "Passenger details are needed — press Confirm again to enter them.")
         return True
     fields = traveller_profile.modal_fields(problems, domestic=domestic)
     try:
-        client.views_open(trigger_id=trigger_id,
-                          view=_passenger_modal(row["id"], fields, res.invalid, profile,
-                                                domestic=domestic))
+        client.views_open(
+            trigger_id=trigger_id,
+            view=_passenger_modal(row["id"], fields, res.invalid, profile, domestic=domestic),
+        )
     except Exception as e:  # noqa: BLE001
         log.warning("could not open passenger-details modal for row %s: %s", row["id"], type(e).__name__)
         _dm(client, employee, ":warning: Couldn't open the passenger-details form. Try Confirm again.")
@@ -448,9 +482,18 @@ _GENDER_OPTIONS = [_option("m", "Male"), _option("f", "Female")]
 _ID_TYPE_OPTIONS = [_option(k, v) for k, v in traveller_profile.ID_TYPES.items()]
 
 
-def _passenger_modal(row_id, fields, invalid, profile, *, domestic,
-                     callback_id="passenger_details", intro=None, required=(),
-                     extra_blocks=()):
+def _passenger_modal(
+    row_id,
+    fields,
+    invalid,
+    profile,
+    *,
+    domestic,
+    callback_id="passenger_details",
+    intro=None,
+    required=(),
+    extra_blocks=(),
+):
     """Domestic: basic details + ID type only. International: passport form.
 
     Saved values are pre-filled, except the passport number, which is never
@@ -460,13 +503,17 @@ def _passenger_modal(row_id, fields, invalid, profile, *, domestic,
     if intro is not None:
         pass
     elif domestic:
-        intro = (":lock: Enter your name exactly as on the ID you'll carry. "
-                 "No ID number is needed for flights within India.")
+        intro = (
+            ":lock: Enter your name exactly as on the ID you'll carry. "
+            "No ID number is needed for flights within India."
+        )
     else:
-        intro = (":lock: Enter details exactly as on your passport. Your passport must be valid "
-                 f"for {traveller_profile.PASSPORT_VALIDITY_MONTHS} months after your last flight. "
-                 "Details are stored encrypted, used only to book your own flights, and never "
-                 "shown in Slack messages.")
+        intro = (
+            ":lock: Enter details exactly as on your passport. Your passport must be valid "
+            f"for {traveller_profile.PASSPORT_VALIDITY_MONTHS} months after your last flight. "
+            "Details are stored encrypted, used only to book your own flights, and never "
+            "shown in Slack messages."
+        )
     blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": intro}]}]
     for f in fields:
         saved = profile.get(f)
@@ -475,13 +522,16 @@ def _passenger_modal(row_id, fields, invalid, profile, *, domestic,
         hint = None
         if f == "gender":
             element = {"type": "static_select", "action_id": "value", "options": _GENDER_OPTIONS}
-            opt = next((o for o in _GENDER_OPTIONS
-                        if saved and o["value"] == str(saved).lower()[:1]), None)
+            opt = next((o for o in _GENDER_OPTIONS if saved and o["value"] == str(saved).lower()[:1]), None)
             if opt:
                 element["initial_option"] = opt
         elif f == "id_type":
-            element = {"type": "static_select", "action_id": "value", "options": _ID_TYPE_OPTIONS,
-                       "placeholder": {"type": "plain_text", "text": "Choose an ID"}}
+            element = {
+                "type": "static_select",
+                "action_id": "value",
+                "options": _ID_TYPE_OPTIONS,
+                "placeholder": {"type": "plain_text", "text": "Choose an ID"},
+            }
             opt = next((o for o in _ID_TYPE_OPTIONS if o["value"] == saved), None)
             if opt:
                 element["initial_option"] = opt
@@ -494,23 +544,25 @@ def _passenger_modal(row_id, fields, invalid, profile, *, domestic,
                 except ValueError:
                     pass
         else:
-            element = {"type": "plain_text_input", "action_id": "value",
-                       "max_length": _MAX_LEN.get(f, 50)}
+            element = {"type": "plain_text_input", "action_id": "value", "max_length": _MAX_LEN.get(f, 50)}
             if f == "passport_number":
                 if saved and f not in invalid:
                     # Never echo the number; keep it unless a new one is typed.
                     optional = True
-                    hint = (f"On file: {traveller_profile.mask_passport(saved)}. "
-                            "Leave blank to keep it.")
+                    hint = f"On file: {traveller_profile.mask_passport(saved)}. Leave blank to keep it."
             elif saved:
-                element["initial_value"] = saved[:_MAX_LEN.get(f, 50)]
+                element["initial_value"] = saved[: _MAX_LEN.get(f, 50)]
         if f == "passport_issue":
             optional = True  # optional unless LetsFG asked for it
         if f in required:
             optional, hint = False, None
         label = (_DOMESTIC_LABELS.get(f) if domestic else None) or traveller_profile.LABELS.get(f, f)
-        block = {"type": "input", "block_id": f, "element": element,
-                 "label": {"type": "plain_text", "text": label[:2000]}}
+        block = {
+            "type": "input",
+            "block_id": f,
+            "element": element,
+            "label": {"type": "plain_text", "text": label[:2000]},
+        }
         if optional:
             block["optional"] = True
         if f in invalid:
@@ -580,8 +632,10 @@ def _handle_passenger_details(ack, body, client, view):
         secure_store.save(actor, to_save)
     except secure_store.SecureStoreUnavailable:
         first = next(iter(shown), None)
-        ack(response_action="errors",
-            errors={first: "Secure storage is not configured — ask the admin."} if first else {})
+        ack(
+            response_action="errors",
+            errors={first: "Secure storage is not configured — ask the admin."} if first else {},
+        )
         return
     ack()
     saved_msg = ":lock: Passenger details saved securely."
@@ -599,11 +653,15 @@ def _handle_passenger_details(ack, body, client, view):
     if row.get("manager_channel") and row.get("manager_message_ts"):
         try:
             client.chat_update(
-                channel=row["manager_channel"], ts=row["manager_message_ts"],
+                channel=row["manager_channel"],
+                ts=row["manager_message_ts"],
                 text=f"Booking confirmed: {picked.get('summary', '')}",
                 blocks=[
                     {"type": "section", "text": {"type": "mrkdwn", "text": f"*{picked.get('summary', '')}*"}},
-                    {"type": "context", "elements": [{"type": "mrkdwn", "text": f":lock: Confirmed by <@{actor}>"}]},
+                    {
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": f":lock: Confirmed by <@{actor}>"}],
+                    },
                 ],
             )
         except Exception as e:  # noqa: BLE001
@@ -675,9 +733,11 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
         return
     if retry and (result.get("offer_expired") or result.get("price_changed")):
         db.update(row_id, status="expired", details={**picked, **result})
-        threading.Thread(target=reprice_and_reconfirm,
-                         args=(client, row_id, employee, employee_dm, picked, result),
-                         daemon=True).start()
+        threading.Thread(
+            target=reprice_and_reconfirm,
+            args=(client, row_id, employee, employee_dm, picked, result),
+            daemon=True,
+        ).start()
         return
 
     db.update(
@@ -685,10 +745,12 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
         status=status,
         booking_ref=result.get("booking_ref"),
         details={**picked, **result},
-        payment_status="awaiting_payment" if result.get("approve_url") else result.get("payment_status", "unpaid"),
+        payment_status="awaiting_payment"
+        if result.get("approve_url")
+        else result.get("payment_status", "unpaid"),
     )
 
-    price = f"{result.get('price', '')} {result.get('currency','')}".strip()
+    price = f"{result.get('price', '')} {result.get('currency', '')}".strip()
     summary = result.get("summary", "") or picked.get("summary", "")
     msg = result.get("message", "")
 
@@ -696,17 +758,23 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
     id_line = f"\n:identification_card: {_DOMESTIC_ID_LINE}" if domestic else ""
 
     if status == "picked":  # DRY_RUN
-        _notify(client, employee_dm,
-                f":test_tube: *Dry run* — would book: {summary} · {price}{id_line}\n(DRY_RUN=true in .env)")
+        _notify(
+            client,
+            employee_dm,
+            f":test_tube: *Dry run* — would book: {summary} · {price}{id_line}\n(DRY_RUN=true in .env)",
+        )
         return
     if status in ("no_match", "need_info", "setup_required", "failed"):
         if retry:
-            told = _escalate(client, row_id, employee, picked,
-                             f"Booking still failed after the traveller added passport details: "
-                             f"{status} — {msg}")
+            told = _escalate(
+                client,
+                row_id,
+                employee,
+                picked,
+                f"Booking still failed after the traveller added passport details: {status} — {msg}",
+            )
             msg += " " + told
-        _notify(client, employee_dm,
-                f":warning: Not booked ({status}). {msg}\n{summary}")
+        _notify(client, employee_dm, f":warning: Not booked ({status}). {msg}\n{summary}")
         return
 
     lines = [f":white_check_mark: Booking started: {summary} · {price}"]
@@ -745,69 +813,96 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
             log.info("booking %s → %s", booking_ref, state)
             last = state
             if state == "awaiting_approval" and st.get("approve_url"):
-                _notify(client, employee_dm,
-                        f":point_right: LetsFG needs payment approval: {st['approve_url']}\n"
-                        "_Payment is not complete until LetsFG confirms the ticket._")
+                _notify(
+                    client,
+                    employee_dm,
+                    f":point_right: LetsFG needs payment approval: {st['approve_url']}\n"
+                    "_Payment is not complete until LetsFG confirms the ticket._",
+                )
         if state == "completed" and not st.get("pnr"):
             state = "needs_attention"
-            st = {**st, "status": state,
-                  "message": "LetsFG reported completed without a PNR — check with LetsFG."}
+            st = {
+                **st,
+                "status": state,
+                "message": "LetsFG reported completed without a PNR — check with LetsFG.",
+            }
         if state == "completed":
             charged = st.get("charged_amount")
             if charged is None:
                 charged = st.get("total")
-            db.update(row_id, status="completed", pnr=st.get("pnr"),
-                      payment_status="paid", charged_amount=charged, details=st)
-            text = (f":ticket: *Ticket issued!* PNR: *{st.get('pnr')}*\n"
-                    f"Total: {charged} {st.get('currency','')}")
+            db.update(
+                row_id,
+                status="completed",
+                pnr=st.get("pnr"),
+                payment_status="paid",
+                charged_amount=charged,
+                details=st,
+            )
+            text = (
+                f":ticket: *Ticket issued!* PNR: *{st.get('pnr')}*\nTotal: {charged} {st.get('currency', '')}"
+            )
             if st.get("ticket_url"):
                 text += f"\nTicket: {st['ticket_url']}"
             if domestic:
                 text += f"\n:identification_card: {_DOMESTIC_ID_LINE}"
             _notify(client, employee_dm, text)
             return
-        if state in ("failed", "approval_expired", "not_started",
-                     "needs_attention", "cancelled"):
-            db.update(row_id, status=state,
-                      payment_status="failed" if state == "failed" else "unpaid",
-                      details=st)
-            _notify(client, employee_dm,
-                    f":warning: Booking {state}. {st.get('message','')}")
+        if state in ("failed", "approval_expired", "not_started", "needs_attention", "cancelled"):
+            db.update(
+                row_id, status=state, payment_status="failed" if state == "failed" else "unpaid", details=st
+            )
+            _notify(client, employee_dm, f":warning: Booking {state}. {st.get('message', '')}")
             return
     db.update(row_id, status="timeout")
-    _notify(client, employee_dm,
-            ":hourglass: Still not ticketed after the waiting time. Check your LetsFG email/account.")
+    _notify(
+        client,
+        employee_dm,
+        ":hourglass: Still not ticketed after the waiting time. Check your LetsFG email/account.",
+    )
 
 
 # ---------------------------------------------------------------------------
 # need_info: LetsFG wants more passenger fields (e.g. passport on a domestic fare)
 # ---------------------------------------------------------------------------
 
-_DOCS_INTRO_DOMESTIC = ("This fare requires passport details even for a domestic flight. "
-                        "Saved securely for future bookings.")
+_DOCS_INTRO_DOMESTIC = (
+    "This fare requires passport details even for a domestic flight. Saved securely for future bookings."
+)
 _DOCS_INTRO_INTL = "This fare requires these passport details. Saved securely for future bookings."
-_ALT_LABEL = (":grey_question: *Needs confirmation:* not yet confirmed bookable without a passport. "
-              "LetsFG only tells us when booking; if it asks for passport details, nothing is "
-              "charged and you'll be told.")
-_PASSPORT_EVERYWHERE = ("LetsFG currently requires passport details even for domestic flights "
-                        "within India, on every airline, so another flight won't avoid it.")
+_ALT_LABEL = (
+    ":grey_question: *Needs confirmation:* not yet confirmed bookable without a passport. "
+    "LetsFG only tells us when booking; if it asks for passport details, nothing is "
+    "charged and you'll be told."
+)
+_PASSPORT_EVERYWHERE = (
+    "LetsFG currently requires passport details even for domestic flights "
+    "within India, on every airline, so another flight won't avoid it."
+)
 
 
 def _passport_everywhere(employee, picked=None, result=None) -> bool:
     """Has LetsFG shown it needs a passport on every booking for this traveller?"""
     if (result or {}).get("passport_required_everywhere") or (picked or {}).get(
-            "passport_required_everywhere"):
+        "passport_required_everywhere"
+    ):
         return True
     return bool(letsfg_booking.passport_restriction(employee))
 
 
 def _no_passport_button(row_id, restricted):
     if restricted:
-        return {"type": "button", "action_id": "request_manual_booking",
-                "value": json.dumps({"row": row_id}),
-                "text": {"type": "plain_text", "text": "No passport — ask the travel admin"}}
-    return {"type": "button", "action_id": "no_passport", "value": json.dumps({"row": row_id}),
-            "text": {"type": "plain_text", "text": "I don't have a passport"}}
+        return {
+            "type": "button",
+            "action_id": "request_manual_booking",
+            "value": json.dumps({"row": row_id}),
+            "text": {"type": "plain_text", "text": "No passport — ask the travel admin"},
+        }
+    return {
+        "type": "button",
+        "action_id": "no_passport",
+        "value": json.dumps({"row": row_id}),
+        "text": {"type": "plain_text", "text": "I don't have a passport"},
+    }
 
 
 def _row_details(row) -> dict:
@@ -825,27 +920,35 @@ def _labels(fields) -> str:
 def _escalate(client, row_id, employee, picked, reason) -> str:
     """Tell the travel admin(s). Field names only — never document values.
     Returns a sentence for the traveller saying who was told."""
-    text = (f":rotating_light: TravelDesk request #{row_id} for <@{employee}> needs a human.\n"
-            f"*Flight:* {picked.get('summary', '?')} "
-            f"({picked.get('airline_name') or picked.get('airline') or '?'}"
-            f"{', fare ' + picked['fare_type'] if picked.get('fare_type') else ''})\n"
-            f"*Problem:* {reason}")
+    text = (
+        f":rotating_light: TravelDesk request #{row_id} for <@{employee}> needs a human.\n"
+        f"*Flight:* {picked.get('summary', '?')} "
+        f"({picked.get('airline_name') or picked.get('airline') or '?'}"
+        f"{', fare ' + picked['fare_type'] if picked.get('fare_type') else ''})\n"
+        f"*Problem:* {reason}"
+    )
     delivered = [a for a in config.TRAVEL_ADMINS if _dm(client, a, text)]
     log.warning("escalated row %s to %d admin(s): %s", row_id, len(delivered), reason)
     if delivered:
         return "The travel admin has been told."
-    return ("No travel admin is set up to be notified (TRAVEL_ADMIN_SLACK_IDS), "
-            "so please contact them directly.")
+    return (
+        "No travel admin is set up to be notified (TRAVEL_ADMIN_SLACK_IDS), so please contact them directly."
+    )
 
 
 def _handle_need_info(client, row_id, employee, employee_dm, picked, result, *, retry):
     missing = list(result.get("missing_fields") or [])
-    required = sorted(set(picked.get("required_fields") or [])
-                      | set(result.get("required_fields") or []) | set(missing))
-    details = {**picked, "required_fields": required, "missing_fields": missing,
-               # The next call needs a new idempotency key: nothing was booked.
-               "book_attempt": int(result.get("book_attempt") or 0) + 1,
-               "need_info_message": result.get("message", "")}
+    required = sorted(
+        set(picked.get("required_fields") or []) | set(result.get("required_fields") or []) | set(missing)
+    )
+    details = {
+        **picked,
+        "required_fields": required,
+        "missing_fields": missing,
+        # The next call needs a new idempotency key: nothing was booked.
+        "book_attempt": int(result.get("book_attempt") or 0) + 1,
+        "need_info_message": result.get("message", ""),
+    }
     restricted = bool(picked.get("domestic")) and _passport_everywhere(employee, picked, result)
     if restricted:
         details["passport_required_everywhere"] = True
@@ -854,34 +957,57 @@ def _handle_need_info(client, row_id, employee, employee_dm, picked, result, *, 
     if retry or result.get("escalate") or not missing or uncollectable:
         db.update(row_id, status="needs_attention", details=details)
         asked = ", ".join(missing) or "unspecified fields"
-        why = ("after your saved details were sent" if result.get("escalate") or retry
-               else "which I can't collect here" if uncollectable else "")
-        told = _escalate(client, row_id, employee, picked,
-                         f"LetsFG need_info, still asking for: {asked} {why}".strip())
-        _notify(client, employee_dm,
-                f":warning: Not booked: LetsFG still wouldn't accept *{picked.get('summary', '')}* "
-                f"(it asks for {asked}). Nothing was booked or charged. {told}")
+        why = (
+            "after your saved details were sent"
+            if result.get("escalate") or retry
+            else "which I can't collect here"
+            if uncollectable
+            else ""
+        )
+        told = _escalate(
+            client, row_id, employee, picked, f"LetsFG need_info, still asking for: {asked} {why}".strip()
+        )
+        _notify(
+            client,
+            employee_dm,
+            f":warning: Not booked: LetsFG still wouldn't accept *{picked.get('summary', '')}* "
+            f"(it asks for {asked}). Nothing was booked or charged. {told}",
+        )
         return
 
     db.update(row_id, status="need_documents", details=details)
     value = json.dumps({"row": row_id})
     intro = _DOCS_INTRO_DOMESTIC if picked.get("domestic") else _DOCS_INTRO_INTL
     if restricted:
-        intro = (f"{_PASSPORT_EVERYWHERE} If you have a passport, enter the details once — "
-                 "they're saved securely for future bookings. If you don't, the travel admin "
-                 "can book this flight for you manually.")
-    text = (f":passport_control: To book *{picked.get('summary', '')}*, LetsFG needs: "
-            f"{_labels(missing)}.\n{intro}\nNothing has been booked or charged yet.")
+        intro = (
+            f"{_PASSPORT_EVERYWHERE} If you have a passport, enter the details once — "
+            "they're saved securely for future bookings. If you don't, the travel admin "
+            "can book this flight for you manually."
+        )
+    text = (
+        f":passport_control: To book *{picked.get('summary', '')}*, LetsFG needs: "
+        f"{_labels(missing)}.\n{intro}\nNothing has been booked or charged yet."
+    )
     needs_passport = any(f in traveller_profile.PASSPORT_FIELDS for f in missing)
     blocks = [
         {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-        {"type": "actions", "block_id": f"traveldesk_docs_{row_id}", "elements": [
-            {"type": "button", "style": "primary", "action_id": "provide_documents",
-             "text": {"type": "plain_text",
-                      "text": "Enter passport details" if needs_passport else "Enter details"},
-             "value": value},
-            _no_passport_button(row_id, restricted),
-        ]},
+        {
+            "type": "actions",
+            "block_id": f"traveldesk_docs_{row_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "action_id": "provide_documents",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Enter passport details" if needs_passport else "Enter details",
+                    },
+                    "value": value,
+                },
+                _no_passport_button(row_id, restricted),
+            ],
+        },
     ]
     if employee_dm:
         try:
@@ -921,19 +1047,32 @@ def _open_documents_modal(body, client, action):
         return
     row_id, row = found
     if not secure_store.is_configured():
-        _dm(client, row["slack_user"], ":warning: Can't collect passport details: secure storage "
-            "isn't configured (TRAVELDESK_DATA_KEY). Ask the admin.")
+        _dm(
+            client,
+            row["slack_user"],
+            ":warning: Can't collect passport details: secure storage "
+            "isn't configured (TRAVELDESK_DATA_KEY). Ask the admin.",
+        )
         return
     picked = _row_details(row)
     missing = list(picked.get("missing_fields") or [])
     restricted = bool(picked.get("domestic")) and _passport_everywhere(row["slack_user"], picked)
     view = _passenger_modal(
-        row_id, missing, {}, traveller_profile.load(row["slack_user"]) or {}, domestic=False,
+        row_id,
+        missing,
+        {},
+        traveller_profile.load(row["slack_user"]) or {},
+        domestic=False,
         callback_id="passenger_documents",
         intro=_DOCS_INTRO_DOMESTIC if picked.get("domestic") else _DOCS_INTRO_INTL,
         required=set(missing),
-        extra_blocks=[{"type": "actions", "block_id": "no_passport_block", "elements": [
-            _no_passport_button(row_id, restricted)]}],
+        extra_blocks=[
+            {
+                "type": "actions",
+                "block_id": "no_passport_block",
+                "elements": [_no_passport_button(row_id, restricted)],
+            }
+        ],
     )
     try:
         client.views_open(trigger_id=body.get("trigger_id"), view=view)
@@ -969,10 +1108,13 @@ def _handle_documents_submission(ack, body, client, view):
     submitted = {k: v for k, v in _submitted_values(view).items() if k in shown}
     merged = {**(traveller_profile.load(actor) or {}), **{k: v for k, v in submitted.items() if v}}
     res = traveller_profile.validate(
-        merged, for_booking=True, travel_date=picked.get("depart_date"),
+        merged,
+        for_booking=True,
+        travel_date=picked.get("depart_date"),
         last_flight_date=picked.get("last_flight_date"),
         passport_months=0 if picked.get("domestic") else traveller_profile.PASSPORT_VALIDITY_MONTHS,
-        also=shown)
+        also=shown,
+    )
     errors = {}
     for f in shown:
         if not submitted.get(f):
@@ -985,13 +1127,17 @@ def _handle_documents_submission(ack, body, client, view):
     try:
         secure_store.save(actor, {f: res.cleaned[f] for f in shown if f in res.cleaned})
     except secure_store.SecureStoreUnavailable:
-        ack(response_action="errors",
-            errors={shown[0]: "Secure storage is not configured — ask the admin."} if shown else {})
+        ack(
+            response_action="errors",
+            errors={shown[0]: "Secure storage is not configured — ask the admin."} if shown else {},
+        )
         return
     ack()
-    msg = (":lock: Passport details saved securely for future bookings."
-           if any(f in traveller_profile.PASSPORT_FIELDS for f in shown)
-           else ":lock: Details saved securely for future bookings.")
+    msg = (
+        ":lock: Passport details saved securely for future bookings."
+        if any(f in traveller_profile.PASSPORT_FIELDS for f in shown)
+        else ":lock: Details saved securely for future bookings."
+    )
     if "passport_number" in res.cleaned and "passport_number" in shown:
         msg += f" Passport on file: {traveller_profile.mask_passport(res.cleaned['passport_number'])}."
     _dm(client, actor, msg + " Retrying the booking…")
@@ -1010,16 +1156,18 @@ def run_document_retry(client, row_id, employee):
     picked = _row_details(db.get(row_id))
     if config.DRY_RUN:
         db.update(row_id, status="need_documents")
-        _notify(client, employee_dm, ":test_tube: *Dry run* — would retry the booking with your "
-                                     "saved details. (DRY_RUN=true in .env)")
+        _notify(
+            client,
+            employee_dm,
+            ":test_tube: *Dry run* — would retry the booking with your saved details. (DRY_RUN=true in .env)",
+        )
         return
     try:
         result = letsfg_booking.book(picked, traveller_profile.load(employee) or {}, row_id)
     except Exception as e:  # noqa: BLE001
         log.exception("document retry failed for row %s", row_id)
         result = {"status": "failed", "message": f"{type(e).__name__}"}
-    _handle_book_result(client, row_id, employee, employee_dm, picked,
-                        {**picked, **result}, retry=True)
+    _handle_book_result(client, row_id, employee, employee_dm, picked, {**picked, **result}, retry=True)
 
 
 # --- price check after an expired offer / changed price ----------------------
@@ -1029,16 +1177,20 @@ def _search_same_route(picked):
     origin, dest = picked.get("origin"), picked.get("destination")
     if not (origin and dest and picked.get("depart_date")):
         return {"status": "failed", "message": "the original route isn't recorded"}
-    return letsfg_rest.search_flights(origin, dest, picked["depart_date"],
-                                      return_from=picked.get("return_from"))
+    return letsfg_rest.search_flights(
+        origin, dest, picked["depart_date"], return_from=picked.get("return_from")
+    )
 
 
 def _picked_from_offer(base, offer, search, **extra):
     details = flight_scope.offer_details(offer)
     return {
-        **base, **details,
-        "status": "picked", "backend": "rest",
-        "search_id": search["search_id"], "offer_id": offer["id"],
+        **base,
+        **details,
+        "status": "picked",
+        "backend": "rest",
+        "search_id": search["search_id"],
+        "offer_id": offer["id"],
         "price": flight_scope.offer_price(offer),
         "currency": offer.get("currency") or search.get("currency") or config.CURRENCY,
         "offer_link": offer.get("booking_url"),
@@ -1050,8 +1202,13 @@ def _picked_from_offer(base, offer, search, **extra):
 def _new_confirmation(client, old_row, employee, employee_dm, picked):
     """New request row + confirmation card: the traveller approves again."""
     row_id, _ = db.new_request(employee, old_row["request"], old_row.get("provider") or config.AI_PROVIDER)
-    db.update(row_id, status="awaiting_confirm", price=picked.get("price"),
-              currency=picked.get("currency"), details=picked)
+    db.update(
+        row_id,
+        status="awaiting_confirm",
+        price=picked.get("price"),
+        currency=picked.get("currency"),
+        details=picked,
+    )
     if not employee_dm:
         try:
             employee_dm = client.conversations_open(users=employee)["channel"]["id"]
@@ -1066,20 +1223,38 @@ def _new_confirmation(client, old_row, employee, employee_dm, picked):
 def reprice_and_reconfirm(client, row_id, employee, employee_dm, picked, result):
     search = _search_same_route(picked)
     if search.get("status") != "ok":
-        _notify(client, employee_dm, ":warning: The fare expired and I couldn't re-check the price "
-                f"({search.get('message', '')}). Nothing was booked or charged. Send the request again.")
+        _notify(
+            client,
+            employee_dm,
+            ":warning: The fare expired and I couldn't re-check the price "
+            f"({search.get('message', '')}). Nothing was booked or charged. Send the request again.",
+        )
         return
     sig = picked.get("signature")
-    match = next((o for o in search["offers"] if isinstance(o, dict) and o.get("id")
-                  and [list(s) for s in flight_scope.signature(o)] == sig), None)
+    match = next(
+        (
+            o
+            for o in search["offers"]
+            if isinstance(o, dict) and o.get("id") and [list(s) for s in flight_scope.signature(o)] == sig
+        ),
+        None,
+    )
     if not match:
-        _notify(client, employee_dm, f":warning: *{picked.get('summary', '')}* is no longer "
-                "available. Nothing was booked or charged. Send the request again to search.")
+        _notify(
+            client,
+            employee_dm,
+            f":warning: *{picked.get('summary', '')}* is no longer "
+            "available. Nothing was booked or charged. Send the request again to search.",
+        )
         return
     new_price = flight_scope.offer_price(match)
     if config.MAX_PRICE and (new_price is None or new_price > config.MAX_PRICE):
-        _notify(client, employee_dm, f":warning: *{picked.get('summary', '')}* now costs "
-                f"{new_price} — above MAX_PRICE. Nothing was booked or charged.")
+        _notify(
+            client,
+            employee_dm,
+            f":warning: *{picked.get('summary', '')}* now costs "
+            f"{new_price} — above MAX_PRICE. Nothing was booked or charged.",
+        )
         return
     old_price = picked.get("price")
     cur = match.get("currency") or picked.get("currency") or ""
@@ -1087,10 +1262,25 @@ def reprice_and_reconfirm(client, row_id, employee, employee_dm, picked, result)
         change = f"The price changed from {old_price} to {new_price} {cur}."
     else:
         change = f"The fare had expired; I re-checked it (still {new_price} {cur})."
-    notice = (f":arrows_counterclockwise: *Please approve again.* {change} "
-              "Your saved passport details will be sent with the booking.")
-    keep = {k: picked[k] for k in ("request", "model", "provider", "summary", "depart_date", "origin",
-                                   "destination", "return_from", "required_fields") if k in picked}
+    notice = (
+        f":arrows_counterclockwise: *Please approve again.* {change} "
+        "Your saved passport details will be sent with the booking."
+    )
+    keep = {
+        k: picked[k]
+        for k in (
+            "request",
+            "model",
+            "provider",
+            "summary",
+            "depart_date",
+            "origin",
+            "destination",
+            "return_from",
+            "required_fields",
+        )
+        if k in picked
+    }
     new_picked = _picked_from_offer(keep, match, search, notice=notice, book_attempt=0)
     _new_confirmation(client, db.get(row_id), employee, employee_dm, new_picked)
 
@@ -1119,18 +1309,29 @@ def _handle_no_passport(body, client, action):
     view = body.get("view") or {}
     if view.get("id"):
         try:
-            client.views_update(view_id=view["id"], view={
-                "type": "modal", "title": {"type": "plain_text", "text": "Passport details"},
-                "close": {"type": "plain_text", "text": "Close"},
-                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text":
-                    "No problem — I'm looking for other flights on the same route and time. "
-                    "I'll message you."}}]})
+            client.views_update(
+                view_id=view["id"],
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Passport details"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "No problem — I'm looking for other flights on the same route and time. "
+                                "I'll message you.",
+                            },
+                        }
+                    ],
+                },
+            )
         except Exception as e:  # noqa: BLE001
             log.warning("views_update failed: %s", type(e).__name__)
     else:
         _update_card_as_done(client, body, "No passport — looking for other flights")
-    threading.Thread(target=find_alternatives, args=(client, row_id, body["user"]["id"]),
-                     daemon=True).start()
+    threading.Thread(target=find_alternatives, args=(client, row_id, body["user"]["id"]), daemon=True).start()
 
 
 @app.action("request_manual_booking")
@@ -1147,18 +1348,30 @@ def _request_manual_booking(body, client, row_id, row):
         return
     employee = row["slack_user"]
     picked = _row_details(row)
-    told = _escalate(client, row_id, employee, picked,
-                     "Traveller has no passport and LetsFG requires passport details for every "
-                     "booking, including domestic flights. Please book this flight manually.")
-    done = (f":information_source: {_PASSPORT_EVERYWHERE} I've asked for this flight to be "
-            f"booked manually. Nothing was booked or charged. {told}")
+    told = _escalate(
+        client,
+        row_id,
+        employee,
+        picked,
+        "Traveller has no passport and LetsFG requires passport details for every "
+        "booking, including domestic flights. Please book this flight manually.",
+    )
+    done = (
+        f":information_source: {_PASSPORT_EVERYWHERE} I've asked for this flight to be "
+        f"booked manually. Nothing was booked or charged. {told}"
+    )
     view = body.get("view") or {}
     if view.get("id"):
         try:
-            client.views_update(view_id=view["id"], view={
-                "type": "modal", "title": {"type": "plain_text", "text": "Passport details"},
-                "close": {"type": "plain_text", "text": "Close"},
-                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": done}}]})
+            client.views_update(
+                view_id=view["id"],
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Passport details"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": done}}],
+                },
+            )
         except Exception as e:  # noqa: BLE001
             log.warning("views_update failed: %s", type(e).__name__)
     else:
@@ -1187,21 +1400,35 @@ def find_alternatives(client, row_id, employee):
         return
     if picked.get("domestic") and _passport_everywhere(employee, picked):
         db.update(row_id, status="needs_attention")
-        told = _escalate(client, row_id, employee, picked,
-                         "Traveller has no passport and LetsFG requires passport details for "
-                         "every booking. Please book this flight manually.")
-        _notify(client, employee_dm, f":information_source: {_PASSPORT_EVERYWHERE} Nothing was "
-                f"booked or charged. {told}")
+        told = _escalate(
+            client,
+            row_id,
+            employee,
+            picked,
+            "Traveller has no passport and LetsFG requires passport details for "
+            "every booking. Please book this flight manually.",
+        )
+        _notify(
+            client,
+            employee_dm,
+            f":information_source: {_PASSPORT_EVERYWHERE} Nothing was booked or charged. {told}",
+        )
         return
     search = _search_same_route(picked)
     if search.get("status") != "ok":
-        _notify(client, employee_dm, f":warning: Couldn't search for other flights "
-                f"({search.get('message', '')}). Send the request again later.")
+        _notify(
+            client,
+            employee_dm,
+            f":warning: Couldn't search for other flights "
+            f"({search.get('message', '')}). Send the request again later.",
+        )
         return
     sig = picked.get("signature")
     candidates = [
-        o for o in search["offers"]
-        if isinstance(o, dict) and o.get("id")
+        o
+        for o in search["offers"]
+        if isinstance(o, dict)
+        and o.get("id")
         and [list(s) for s in flight_scope.signature(o)] != sig
         and _in_window(o, picked.get("depart_at"))
         and (p := flight_scope.offer_price(o)) is not None
@@ -1215,43 +1442,82 @@ def find_alternatives(client, row_id, employee):
     # Airlines never seen asking for passports first, then cheapest.
     unknown.sort(key=lambda o: (history[o["id"]] is not None, flight_scope.offer_price(o)))
     window = f"±{config.ALT_WINDOW_HOURS:g}h of the original flight"
-    route = f"{picked.get('origin', '?')} → {picked.get('destination', '?')} on {picked.get('depart_date', '?')}"
+    route = (
+        f"{picked.get('origin', '?')} → {picked.get('destination', '?')} on {picked.get('depart_date', '?')}"
+    )
 
     if not unknown:
-        reason = (f"every other flight {route} ({window}) is on a fare that has asked for "
-                  f"passport details ({len(candidates)} checked)" if candidates
-                  else f"no other flights {route} ({window})")
+        reason = (
+            f"every other flight {route} ({window}) is on a fare that has asked for "
+            f"passport details ({len(candidates)} checked)"
+            if candidates
+            else f"no other flights {route} ({window})"
+        )
         db.update(row_id, status="needs_attention")
-        told = _escalate(client, row_id, employee, picked,
-                         f"Traveller has no passport and {reason}.")
-        _notify(client, employee_dm, f":warning: I couldn't find a flight you can book without a "
-                f"passport: {reason}. Nothing was booked or charged. {told}")
+        told = _escalate(client, row_id, employee, picked, f"Traveller has no passport and {reason}.")
+        _notify(
+            client,
+            employee_dm,
+            f":warning: I couldn't find a flight you can book without a "
+            f"passport: {reason}. Nothing was booked or charged. {told}",
+        )
         return
 
     alts = []
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text":
-               f"*Other flights {route}* ({window}).\n{_ALT_LABEL}"}}]
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Other flights {route}* ({window}).\n{_ALT_LABEL}"},
+        }
+    ]
     for i, o in enumerate(unknown[:5]):
         d = flight_scope.offer_details(o)
         alt = _picked_from_offer(
-            {k: picked[k] for k in ("origin", "destination", "return_from", "depart_date", "provider")
-             if k in picked},
-            o, search, summary=d["auto_summary"], model="alternative",
-            notice=_ALT_LABEL)
+            {
+                k: picked[k]
+                for k in ("origin", "destination", "return_from", "depart_date", "provider")
+                if k in picked
+            },
+            o,
+            search,
+            summary=d["auto_summary"],
+            model="alternative",
+            notice=_ALT_LABEL,
+        )
         alts.append(alt)
-        seen = (" · _this airline has asked for passports on other fares_"
-                if history[o["id"]] == "airline" else "")
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{alt['summary']}*\n{alt['price']} {alt['currency']}{seen}"},
-            "accessory": {"type": "button", "action_id": "choose_alternative",
-                          "text": {"type": "plain_text", "text": "Choose this flight"},
-                          "value": json.dumps({"row": row_id, "alt": i})},
-        })
+        seen = (
+            " · _this airline has asked for passports on other fares_"
+            if history[o["id"]] == "airline"
+            else ""
+        )
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{alt['summary']}*\n{alt['price']} {alt['currency']}{seen}",
+                },
+                "accessory": {
+                    "type": "button",
+                    "action_id": "choose_alternative",
+                    "text": {"type": "plain_text", "text": "Choose this flight"},
+                    "value": json.dumps({"row": row_id, "alt": i}),
+                },
+            }
+        )
     skipped = len(candidates) - len(unknown)
     if skipped:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
-            f"{skipped} other flight(s) hidden: their fares have asked for passport details before."}]})
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"{skipped} other flight(s) hidden: their fares have asked for passport details before.",
+                    }
+                ],
+            }
+        )
     db.update(row_id, details={**picked, "alternatives": alts})
     try:
         client.chat_postMessage(channel=employee_dm, text=f"Other flights {route}", blocks=blocks)
@@ -1315,7 +1581,8 @@ def _resume_unfinished_bookings(client):
 if __name__ == "__main__":
     log.info(
         "TravelDesk bot starting (provider=%s, DRY_RUN=%s)",
-        config.AI_PROVIDER, config.DRY_RUN,
+        config.AI_PROVIDER,
+        config.DRY_RUN,
     )
     traveller_profile.check_travellers_file()
     if not secure_store.is_configured():

@@ -3,6 +3,7 @@
 Bypasses the Slack Bolt app and calls `_handle_decision` directly with a
 synthesised action body, after stubbing the agent module.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,11 +42,13 @@ def test_only_requesting_employee_can_confirm():
 
 def test_requesting_employee_can_confirm(monkeypatch):
     row_id, _ = db.new_request("UEMP1", "DEL BOM own", "claude")
-    db.update(row_id, status="awaiting_confirm",
-              details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
+    db.update(
+        row_id,
+        status="awaiting_confirm",
+        details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"},
+    )
     # Prevent background thread.
-    monkeypatch.setattr(bot_app.threading, "Thread",
-                        lambda **kw: SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(bot_app.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     client = MagicMock()
     bot_app._handle_decision(_body("UEMP1"), client, _action(row_id), "confirmed")
     row = db.get(row_id)
@@ -55,10 +58,12 @@ def test_requesting_employee_can_confirm(monkeypatch):
 
 def test_duplicate_clicks_only_count_once(monkeypatch):
     row_id, _ = db.new_request("UEMP1", "DEL CCU", "claude")
-    db.update(row_id, status="awaiting_confirm",
-              details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
-    monkeypatch.setattr(bot_app.threading, "Thread",
-                        lambda **kw: SimpleNamespace(start=lambda: None))
+    db.update(
+        row_id,
+        status="awaiting_confirm",
+        details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"},
+    )
+    monkeypatch.setattr(bot_app.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     client = MagicMock()
     bot_app._handle_decision(_body("UEMP1"), client, _action(row_id), "confirmed")
     bot_app._handle_decision(_body("UEMP1"), client, _action(row_id), "confirmed")
@@ -71,8 +76,9 @@ def test_cancel_notifies_employee(monkeypatch):
     row_id, _ = db.new_request("UEMP1", "DEL HYD", "claude")
     db.update(row_id, status="awaiting_confirm", details={"summary": "x"})
     # the agent should not be called when cancelling
-    monkeypatch.setattr(bot_app.agent_factory, "get_agent",
-                        lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(
+        bot_app.agent_factory, "get_agent", lambda: (_ for _ in ()).throw(AssertionError("must not run"))
+    )
     client = MagicMock()
     client.conversations_open.return_value = {"channel": {"id": "CEMP"}}
     bot_app._handle_decision(_body("UEMP1"), client, _action(row_id), "cancelled")
@@ -88,8 +94,7 @@ def test_dry_run_never_books(monkeypatch):
     class FakeAgent:
         @staticmethod
         def confirm(picked, traveller, **_kw):
-            return {**picked, "status": "picked",
-                    "message": "DRY_RUN", "provider": "claude"}
+            return {**picked, "status": "picked", "message": "DRY_RUN", "provider": "claude"}
 
         @staticmethod
         def booking_status(_ref, **_kw):
@@ -99,11 +104,18 @@ def test_dry_run_never_books(monkeypatch):
     client = MagicMock()
     client.conversations_open.return_value = {"channel": {"id": "CEMP"}}
     row_id, _ = db.new_request("UEMP1", "DRY RUN", "claude")
-    db.update(row_id, status="awaiting_confirm",
-              details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
-    bot_app.run_booking(client, row_id, "UEMP1",
-                        {"summary": "x", "price": 100, "currency": "INR"},
-                        {"given_name": "A", "family_name": "B", "email": "a@b"})
+    db.update(
+        row_id,
+        status="awaiting_confirm",
+        details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"},
+    )
+    bot_app.run_booking(
+        client,
+        row_id,
+        "UEMP1",
+        {"summary": "x", "price": 100, "currency": "INR"},
+        {"given_name": "A", "family_name": "B", "email": "a@b"},
+    )
     row = db.get(row_id)
     assert row["status"] == "picked"
     assert row["booking_ref"] is None

@@ -8,6 +8,7 @@ Covers:
 (Status mapping and "never completed without a PNR" are in test_letsfg_rest.)
 No real network calls.
 """
+
 from __future__ import annotations
 
 import sys
@@ -20,8 +21,7 @@ def test_validate_traveller_reports_missing_fields():
     err = letsfg_booking.validate_traveller({"given_name": "Raj", "email": "raj@x"})
     assert err and "family_name" in err
     assert letsfg_booking.validate_traveller(None) == "traveller profile is missing"
-    assert letsfg_booking.validate_traveller(
-        {"given_name": "A", "family_name": "B", "email": "a@b"}) is None
+    assert letsfg_booking.validate_traveller({"given_name": "A", "family_name": "B", "email": "a@b"}) is None
 
 
 def test_confirm_is_idempotent_for_same_booking_id(monkeypatch):
@@ -40,15 +40,25 @@ def test_confirm_is_idempotent_for_same_booking_id(monkeypatch):
 
     def fake_book(picked, traveller, booking_id):
         call_count["n"] += 1
-        return {"status": "awaiting_approval", "booking_ref": "BK-IDEM",
-                "approve_url": "https://pay/BK-IDEM", "message": ""}
+        return {
+            "status": "awaiting_approval",
+            "booking_ref": "BK-IDEM",
+            "approve_url": "https://pay/BK-IDEM",
+            "message": "",
+        }
 
     monkeypatch.setattr(claude_agent.letsfg_booking, "book", fake_book)
 
-    picked = {"status": "picked", "backend": "rest", "search_id": "S", "offer_id": "O",
-              "summary": "x", "price": 100, "currency": "INR"}
-    traveller = {"given_name": "A", "family_name": "B",
-                 "email": "a@b", "phone": "+1"}
+    picked = {
+        "status": "picked",
+        "backend": "rest",
+        "search_id": "S",
+        "offer_id": "O",
+        "summary": "x",
+        "price": 100,
+        "currency": "INR",
+    }
+    traveller = {"given_name": "A", "family_name": "B", "email": "a@b", "phone": "+1"}
 
     out1 = claude_agent.confirm(picked, traveller, booking_id=row_id)
     assert out1["status"] == "awaiting_approval"

@@ -5,6 +5,7 @@ at a tmp file, so importing config/db/agent never touches real credentials or
 the production SQLite file. No real Slack / LetsFG / Claude call is
 made in any test.
 """
+
 from __future__ import annotations
 
 import atexit

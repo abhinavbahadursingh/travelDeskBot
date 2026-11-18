@@ -1,4 +1,5 @@
 """The agent factory returns the Claude agent without touching the net."""
+
 from __future__ import annotations
 
 import importlib

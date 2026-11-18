@@ -17,6 +17,7 @@ missing fields when they confirm a booking.
 SENSITIVE_FIELDS never go to an LLM, never into logs and never into Slack
 messages. Use `redact()` to describe a profile in logs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,15 +34,28 @@ log = logging.getLogger("traveller_profile")
 
 SEARCH_REQUIRED = ("given_name", "family_name", "email")
 BOOKING_ONLY_REQUIRED = (
-    "date_of_birth", "gender", "nationality",
-    "passport_number", "passport_country", "passport_expiry",
+    "date_of_birth",
+    "gender",
+    "nationality",
+    "passport_number",
+    "passport_country",
+    "passport_expiry",
 )
 BOOKING_REQUIRED = SEARCH_REQUIRED + BOOKING_ONLY_REQUIRED
 OPTIONAL_FIELDS = ("phone", "passport_issue")
 SENSITIVE_FIELDS = (
-    "date_of_birth", "gender", "nationality",
-    "passport_number", "passport_country", "passport_expiry", "passport_issue",
-    "address_line1", "address_city", "address_postal", "address_country", "phone_country",
+    "date_of_birth",
+    "gender",
+    "nationality",
+    "passport_number",
+    "passport_country",
+    "passport_expiry",
+    "passport_issue",
+    "address_line1",
+    "address_city",
+    "address_postal",
+    "address_country",
+    "phone_country",
 )
 
 # Collected only when LetsFG asks for them (need_info) and only sent then.
@@ -50,8 +64,7 @@ ON_REQUEST_FIELDS = ADDRESS_FIELDS + ("phone_country",)
 
 # Saved-profile split.
 BASIC_FIELDS = ("given_name", "family_name", "date_of_birth", "gender", "phone")
-PASSPORT_FIELDS = ("nationality", "passport_number", "passport_country", "passport_expiry",
-                   "passport_issue")
+PASSPORT_FIELDS = ("nationality", "passport_number", "passport_country", "passport_expiry", "passport_issue")
 # Fields that are names of document data (LetsFG may ask for them on a fare).
 DOCUMENT_FIELDS = PASSPORT_FIELDS
 DOMESTIC_REQUIRED = SEARCH_REQUIRED + ("date_of_birth", "gender", "phone")
@@ -121,8 +134,9 @@ class ValidationResult:
         if self.missing:
             parts.append("missing: " + ", ".join(LABELS.get(f, f) for f in self.missing))
         if self.invalid:
-            parts.append("invalid: " + "; ".join(
-                f"{LABELS.get(f, f)} ({why})" for f, why in self.invalid.items()))
+            parts.append(
+                "invalid: " + "; ".join(f"{LABELS.get(f, f)} ({why})" for f, why in self.invalid.items())
+            )
         return " | ".join(parts)
 
 
@@ -156,9 +170,15 @@ def min_passport_expiry(last_flight: date, months: int = PASSPORT_VALIDITY_MONTH
     return add_months(last_flight, months)
 
 
-def _check(name: str, raw, *, today: date, travel_date: date,
-           last_flight: date, passport_months: int = PASSPORT_VALIDITY_MONTHS
-           ) -> tuple[object, str | None]:
+def _check(
+    name: str,
+    raw,
+    *,
+    today: date,
+    travel_date: date,
+    last_flight: date,
+    passport_months: int = PASSPORT_VALIDITY_MONTHS,
+) -> tuple[object, str | None]:
     """Return (normalized_value, error_reason_or_None)."""
     v = str(raw).strip()
     if name in ("given_name", "family_name"):
@@ -200,8 +220,9 @@ def _check(name: str, raw, *, today: date, travel_date: date,
             return d.isoformat(), "passport has expired"
         need = min_passport_expiry(last_flight, passport_months)
         if d < need:
-            after = (f"{passport_months} months after your last flight" if passport_months
-                     else "your last flight")
+            after = (
+                f"{passport_months} months after your last flight" if passport_months else "your last flight"
+            )
             return d.isoformat(), f"must be valid until at least {need.isoformat()} ({after})"
         return d.isoformat(), None
     if name == "passport_issue":
@@ -231,17 +252,26 @@ def _check(name: str, raw, *, today: date, travel_date: date,
 def _is_placeholder(v: str) -> bool:
     words = re.findall(r"[A-Z0-9]+", v.upper())
     u = "".join(words)
-    return (any(w in _PLACEHOLDER_WORDS + ("LOREM", "NA", "NONE", "ADDRESS") or w.startswith("XXX")
-                for w in words) or u in ("NA", "NIL", "") or (len(u) > 2 and len(set(u)) == 1))
+    return (
+        any(
+            w in _PLACEHOLDER_WORDS + ("LOREM", "NA", "NONE", "ADDRESS") or w.startswith("XXX") for w in words
+        )
+        or u in ("NA", "NIL", "")
+        or (len(u) > 2 and len(set(u)) == 1)
+    )
 
 
-def validate(profile: dict | None, *, for_booking: bool,
-             travel_date: date | str | None = None,
-             today: date | None = None,
-             domestic: bool = False,
-             last_flight_date: date | str | None = None,
-             passport_months: int = PASSPORT_VALIDITY_MONTHS,
-             also=()) -> ValidationResult:
+def validate(
+    profile: dict | None,
+    *,
+    for_booking: bool,
+    travel_date: date | str | None = None,
+    today: date | None = None,
+    domestic: bool = False,
+    last_flight_date: date | str | None = None,
+    passport_months: int = PASSPORT_VALIDITY_MONTHS,
+    also=(),
+) -> ValidationResult:
     """Validate for search, a domestic-India booking or (default) an
     international booking. Domestic results never contain passport fields.
     `also`: extra fields to check when present (e.g. fields LetsFG asked for)."""
@@ -279,8 +309,14 @@ def validate(profile: dict | None, *, for_booking: bool,
             if name in required:
                 res.missing.append(name)
             continue
-        value, err = _check(name, raw, today=today, travel_date=travel_date,
-                            last_flight=last_flight, passport_months=passport_months)
+        value, err = _check(
+            name,
+            raw,
+            today=today,
+            travel_date=travel_date,
+            last_flight=last_flight,
+            passport_months=passport_months,
+        )
         res.cleaned[name] = value
         if err:
             res.invalid[name] = err
@@ -317,17 +353,30 @@ def load(slack_user: str) -> dict | None:
     return base
 
 
-def saved_fields(profile: dict | None, fields, *, travel_date=None, last_flight_date=None,
-                 passport_months: int = 0, today: date | None = None) -> tuple[dict, list]:
+def saved_fields(
+    profile: dict | None,
+    fields,
+    *,
+    travel_date=None,
+    last_flight_date=None,
+    passport_months: int = 0,
+    today: date | None = None,
+) -> tuple[dict, list]:
     """Split fields LetsFG asked for into (valid saved values, still needed).
 
     Only real saved values are returned — a missing or invalid field is
     never filled with anything else."""
     profile = profile or {}
     fields = list(fields)
-    res = validate(profile, for_booking=True, travel_date=travel_date, today=today,
-                   last_flight_date=last_flight_date, passport_months=passport_months,
-                   also=fields)
+    res = validate(
+        profile,
+        for_booking=True,
+        travel_date=travel_date,
+        today=today,
+        last_flight_date=last_flight_date,
+        passport_months=passport_months,
+        also=fields,
+    )
     have, need = {}, []
     for f in fields:
         if f in res.cleaned and f not in res.invalid:
@@ -367,8 +416,9 @@ def public_view(profile: dict | None) -> dict:
 def redact(profile: dict | None) -> dict:
     """Field → 'set'/'missing'. Safe for logs."""
     profile = profile or {}
-    return {f: ("set" if not _blank(profile.get(f)) else "missing")
-            for f in BOOKING_REQUIRED + OPTIONAL_FIELDS}
+    return {
+        f: ("set" if not _blank(profile.get(f)) else "missing") for f in BOOKING_REQUIRED + OPTIONAL_FIELDS
+    }
 
 
 def check_travellers_file() -> None:
@@ -388,11 +438,15 @@ def check_travellers_file() -> None:
         entry = _from_json(user)
         search = validate(entry, for_booking=False)
         if not search.ok:
-            log.warning("travellers.json entry %s cannot search: %s",
-                        user, ", ".join(search.problem_fields()))
+            log.warning(
+                "travellers.json entry %s cannot search: %s", user, ", ".join(search.problem_fields())
+            )
             continue
         booking = validate(entry, for_booking=True)
         bad = [f for f in booking.invalid if f in admin_fields]
         if bad:
-            log.warning("travellers.json entry %s has invalid %s — REST bookings will be refused",
-                        user, ", ".join(bad))
+            log.warning(
+                "travellers.json entry %s has invalid %s — REST bookings will be refused",
+                user,
+                ", ".join(bad),
+            )

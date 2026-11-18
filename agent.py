@@ -6,6 +6,7 @@ The agent exposes:
     booking_status(booking_ref, booking_id=None) -> dict
     book(request, traveller, booking_id=None) -> dict   # pick + confirm
 """
+
 from __future__ import annotations
 
 import importlib

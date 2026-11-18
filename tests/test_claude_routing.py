@@ -2,9 +2,9 @@
 
 Every Anthropic call is stubbed; no real API traffic.
 """
+
 from __future__ import annotations
 
-import os
 import sys
 from types import SimpleNamespace
 
@@ -17,6 +17,7 @@ def claude_mod(monkeypatch):
     for mod in ("config", "claude_agent"):
         sys.modules.pop(mod, None)
     import claude_agent  # noqa: WPS433 — intentional re-import
+
     yield claude_agent
     for mod in ("config", "claude_agent", "agent"):
         sys.modules.pop(mod, None)
@@ -63,9 +64,7 @@ def test_classifier_uses_haiku_when_heuristic_misses(claude_mod):
         captured.update(kw)
         return _FakeResp("complex", input_tokens=50, output_tokens=1)
 
-    claude_mod._client_singleton = SimpleNamespace(
-        messages=SimpleNamespace(create=fake_create)
-    )
+    claude_mod._client_singleton = SimpleNamespace(messages=SimpleNamespace(create=fake_create))
     out = claude_mod._classify_complexity(
         "I need to get from one of a few cities over to somewhere else sometime next month"
     )
@@ -123,14 +122,25 @@ def test_confirm_never_calls_anthropic(claude_mod, monkeypatch):
         captured["search_id"] = picked["search_id"]
         captured["offer_id"] = picked["offer_id"]
         captured["traveller"] = traveller
-        return {"status": "awaiting_approval", "booking_ref": "BK-1",
-                "approve_url": "https://pay/BK-1", "message": ""}
+        return {
+            "status": "awaiting_approval",
+            "booking_ref": "BK-1",
+            "approve_url": "https://pay/BK-1",
+            "message": "",
+        }
 
     monkeypatch.setattr(claude_mod.letsfg_booking, "book", fake_book)
 
     out = claude_mod.confirm(
-        {"status": "picked", "backend": "rest", "search_id": "S", "offer_id": "O",
-         "summary": "x", "price": 1, "currency": "INR"},
+        {
+            "status": "picked",
+            "backend": "rest",
+            "search_id": "S",
+            "offer_id": "O",
+            "summary": "x",
+            "price": 1,
+            "currency": "INR",
+        },
         {"given_name": "A", "family_name": "B", "email": "a@b", "phone": "+1"},
     )
     assert llm_calls == []

@@ -9,6 +9,7 @@
 * The database file is restricted to owner-only permissions on every write.
 * Nothing here logs field values.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,13 +26,25 @@ log = logging.getLogger("secure_store")
 
 ALLOWED_FIELDS = (
     # basic profile (entered by the traveller in Slack)
-    "given_name", "family_name", "phone", "date_of_birth", "gender",
+    "given_name",
+    "family_name",
+    "phone",
+    "date_of_birth",
+    "gender",
     # type of ID carried on domestic trips — the type only, never a number
     "id_type",
     # passport profile
-    "nationality", "passport_number", "passport_country", "passport_expiry", "passport_issue",
+    "nationality",
+    "passport_number",
+    "passport_country",
+    "passport_expiry",
+    "passport_issue",
     # only collected when LetsFG asks for them
-    "address_line1", "address_city", "address_postal", "address_country", "phone_country",
+    "address_line1",
+    "address_city",
+    "address_postal",
+    "address_country",
+    "phone_country",
 )
 
 
@@ -106,8 +119,7 @@ def save(slack_user: str, fields: dict) -> None:
             (slack_user, token, datetime.now().isoformat(timespec="seconds")),
         )
     _restrict_db_permissions()
-    log.info("secure traveller record updated for %s (fields: %s)",
-             slack_user, ", ".join(sorted(clean)))
+    log.info("secure traveller record updated for %s (fields: %s)", slack_user, ", ".join(sorted(clean)))
 
 
 def delete(slack_user: str) -> None:

@@ -7,6 +7,7 @@ Two tables:
   * ai_usage  — one row per Claude API call, with token counts
                 and estimated USD cost, linked back to a booking.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,23 +36,23 @@ _COLUMNS = [
     ("price", "REAL"),
     ("currency", "TEXT"),
     ("details", "TEXT"),
-    ("request_key", "TEXT"),              # idempotency key
-    ("approver", "TEXT"),                 # employee who confirmed (same as slack_user)
-    ("approval_ts", "TEXT"),              # ISO timestamp of confirm/cancel click
-    ("payment_status", "TEXT"),           # unpaid / awaiting_payment / paid / failed
-    ("manager_message_ts", "TEXT"),       # Slack ts of the confirmation card
-    ("manager_channel", "TEXT"),          # DM channel the card lives in
-    ("provider", "TEXT"),                 # ai provider used (claude)
-    ("charged_amount", "REAL"),           # actual amount charged; set only on completed + PNR
+    ("request_key", "TEXT"),  # idempotency key
+    ("approver", "TEXT"),  # employee who confirmed (same as slack_user)
+    ("approval_ts", "TEXT"),  # ISO timestamp of confirm/cancel click
+    ("payment_status", "TEXT"),  # unpaid / awaiting_payment / paid / failed
+    ("manager_message_ts", "TEXT"),  # Slack ts of the confirmation card
+    ("manager_channel", "TEXT"),  # DM channel the card lives in
+    ("provider", "TEXT"),  # ai provider used (claude)
+    ("charged_amount", "REAL"),  # actual amount charged; set only on completed + PNR
 ]
 
 _AI_USAGE_COLUMNS = [
     ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"),
     ("created_at", "TEXT"),
-    ("booking_id", "INTEGER"),            # nullable; FK to bookings.id
-    ("provider", "TEXT"),                 # claude
-    ("model", "TEXT"),                    # exact model id used
-    ("task_kind", "TEXT"),                # classify / pick / confirm / status / ...
+    ("booking_id", "INTEGER"),  # nullable; FK to bookings.id
+    ("provider", "TEXT"),  # claude
+    ("model", "TEXT"),  # exact model id used
+    ("task_kind", "TEXT"),  # classify / pick / confirm / status / ...
     ("input_tokens", "INTEGER"),
     ("output_tokens", "INTEGER"),
     ("cache_read_tokens", "INTEGER"),
@@ -64,40 +65,24 @@ def _conn():
     conn = sqlite3.connect(config.DATABASE_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS bookings ("
-        + ", ".join(f"{n} {t}" for n, t in _COLUMNS)
-        + ")"
-    )
+    conn.execute("CREATE TABLE IF NOT EXISTS bookings (" + ", ".join(f"{n} {t}" for n, t in _COLUMNS) + ")")
     existing = {row[1] for row in conn.execute("PRAGMA table_info(bookings)")}
     for name, coltype in _COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE bookings ADD COLUMN {name} {coltype}")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_bookings_request_key ON bookings(request_key)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_bookings_slack_user ON bookings(slack_user)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bookings_request_key ON bookings(request_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bookings_slack_user ON bookings(slack_user)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)")
 
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS ai_usage ("
-        + ", ".join(f"{n} {t}" for n, t in _AI_USAGE_COLUMNS)
-        + ")"
+        "CREATE TABLE IF NOT EXISTS ai_usage (" + ", ".join(f"{n} {t}" for n, t in _AI_USAGE_COLUMNS) + ")"
     )
     existing_usage = {row[1] for row in conn.execute("PRAGMA table_info(ai_usage)")}
     for name, coltype in _AI_USAGE_COLUMNS:
         if name not in existing_usage:
             conn.execute(f"ALTER TABLE ai_usage ADD COLUMN {name} {coltype}")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_ai_usage_booking ON ai_usage(booking_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage(model)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_usage_booking ON ai_usage(booking_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage(model)")
     return conn
 
 
@@ -200,8 +185,20 @@ def _ensure_need_info(c) -> None:
     c.execute("CREATE INDEX IF NOT EXISTS idx_need_info_airline ON need_info_log(airline)")
 
 
-def log_need_info(*, booking_id, airline, airline_name, fare_type, route, domestic,
-                  price, currency, fields, http_status=None, error=None) -> None:
+def log_need_info(
+    *,
+    booking_id,
+    airline,
+    airline_name,
+    fare_type,
+    route,
+    domestic,
+    price,
+    currency,
+    fields,
+    http_status=None,
+    error=None,
+) -> None:
     """One row per LetsFG need_info answer. Field NAMES only, never values."""
     with _lock, _conn() as c:
         _ensure_need_info(c)
@@ -209,9 +206,20 @@ def log_need_info(*, booking_id, airline, airline_name, fare_type, route, domest
             "INSERT INTO need_info_log (created_at, booking_id, airline, airline_name, fare_type, "
             "route, domestic, price, currency, fields, http_status, error) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (_now(), booking_id, airline, airline_name, fare_type, route,
-             None if domestic is None else int(bool(domestic)), price, currency,
-             json.dumps(sorted(set(map(str, fields)))), http_status, error),
+            (
+                _now(),
+                booking_id,
+                airline,
+                airline_name,
+                fare_type,
+                route,
+                None if domestic is None else int(bool(domestic)),
+                price,
+                currency,
+                json.dumps(sorted(set(map(str, fields)))),
+                http_status,
+                error,
+            ),
         )
 
 
@@ -224,8 +232,7 @@ def passport_history(airline: str | None, fare_type: str | None = None) -> str |
         return None
     with _lock, _conn() as c:
         _ensure_need_info(c)
-        rows = c.execute("SELECT fare_type, fields FROM need_info_log WHERE airline=?",
-                         (airline,)).fetchall()
+        rows = c.execute("SELECT fare_type, fields FROM need_info_log WHERE airline=?", (airline,)).fetchall()
     seen = None
     for ft, fields in rows:
         try:
@@ -266,8 +273,15 @@ def record_restriction(slack_user, provider, restriction, *, fields=(), source="
             "created_at, updated_at) VALUES (?,?,?,?,?,?,?) "
             "ON CONFLICT(slack_user, provider, restriction) DO UPDATE SET "
             "fields=excluded.fields, source=excluded.source, updated_at=excluded.updated_at",
-            (slack_user, provider, restriction, json.dumps(list(dict.fromkeys(map(str, fields)))),
-             source, now, now),
+            (
+                slack_user,
+                provider,
+                restriction,
+                json.dumps(list(dict.fromkeys(map(str, fields)))),
+                source,
+                now,
+                now,
+            ),
         )
 
 
@@ -276,9 +290,11 @@ def get_restriction(slack_user, provider, restriction) -> dict | None:
         return None
     with _lock, _conn() as c:
         _ensure_restrictions(c)
-        r = c.execute("SELECT fields, source, created_at FROM provider_restrictions "
-                      "WHERE slack_user=? AND provider=? AND restriction=?",
-                      (slack_user, provider, restriction)).fetchone()
+        r = c.execute(
+            "SELECT fields, source, created_at FROM provider_restrictions "
+            "WHERE slack_user=? AND provider=? AND restriction=?",
+            (slack_user, provider, restriction),
+        ).fetchone()
     if not r:
         return None
     try:
@@ -299,7 +315,9 @@ def passport_requests_for_user(slack_user) -> dict:
         _ensure_need_info(c)
         rows = c.execute(
             "SELECT n.airline, n.fields FROM need_info_log n JOIN bookings b ON b.id = n.booking_id "
-            "WHERE b.slack_user=?", (slack_user,)).fetchall()
+            "WHERE b.slack_user=?",
+            (slack_user,),
+        ).fetchall()
     out: dict = {}
     for airline, fields in rows:
         try:
@@ -315,14 +333,20 @@ def passport_requests_for_user(slack_user) -> dict:
 def unfinished_bookings() -> list[dict]:
     """Rows with a booking_ref but no terminal status — used on startup to
     resume polling after a restart."""
-    terminal = ("completed", "failed", "cancelled",
-                "timeout", "approval_expired", "needs_attention", "not_started")
+    terminal = (
+        "completed",
+        "failed",
+        "cancelled",
+        "timeout",
+        "approval_expired",
+        "needs_attention",
+        "not_started",
+    )
     placeholders = ",".join("?" for _ in terminal)
     with _lock, _conn() as c:
         c.row_factory = sqlite3.Row
         rows = c.execute(
-            f"SELECT * FROM bookings WHERE booking_ref IS NOT NULL "
-            f"AND status NOT IN ({placeholders})",
+            f"SELECT * FROM bookings WHERE booking_ref IS NOT NULL AND status NOT IN ({placeholders})",
             terminal,
         ).fetchall()
         return [dict(r) for r in rows]
@@ -366,9 +390,13 @@ def _price_tier(model: str) -> dict | None:
     return None
 
 
-def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int,
-                      cache_read_tokens: int = 0,
-                      cache_creation_tokens: int = 0) -> float:
+def estimate_cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> float:
     tier = _price_tier(model)
     if not tier:
         return 0.0
@@ -394,8 +422,11 @@ def record_ai_usage(
 ) -> int:
     """Insert one row into ai_usage. Returns the new row id."""
     est = estimate_cost_usd(
-        model, input_tokens, output_tokens,
-        cache_read_tokens, cache_creation_tokens,
+        model,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
     )
     with _lock, _conn() as c:
         cur = c.execute(
@@ -403,10 +434,18 @@ def record_ai_usage(
             "created_at, booking_id, provider, model, task_kind, "
             "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
             "est_cost_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (_now(), booking_id, provider, model, task_kind,
-             int(input_tokens or 0), int(output_tokens or 0),
-             int(cache_read_tokens or 0), int(cache_creation_tokens or 0),
-             est),
+            (
+                _now(),
+                booking_id,
+                provider,
+                model,
+                task_kind,
+                int(input_tokens or 0),
+                int(output_tokens or 0),
+                int(cache_read_tokens or 0),
+                int(cache_creation_tokens or 0),
+                est,
+            ),
         )
         return cur.lastrowid
 
