@@ -99,3 +99,19 @@ def test_thread_reply_gets_hint_not_search(threads, client):
     bot_app.on_message(_dm("thanks", thread_ts="0.5"), client)
     assert threads == []
     assert "new message" in _texts(client)[0]
+
+
+def test_heartbeat_logs_until_stopped(caplog):
+    import logging
+    import threading
+    import time
+
+    stop = threading.Event()
+    with caplog.at_level(logging.INFO, logger="traveldesk"):
+        t = threading.Thread(target=bot_app._heartbeat, args=(stop, 0.01, time.monotonic()))
+        t.start()
+        time.sleep(0.05)
+        stop.set()
+        t.join(1)
+    assert not t.is_alive()
+    assert any("heartbeat: alive" in r.getMessage() for r in caplog.records)

@@ -65,6 +65,8 @@ ALT_WINDOW_HOURS = float(_opt("ALT_WINDOW_HOURS", "3"))
 
 POLL_SECONDS = int(_opt("POLL_SECONDS", "45"))
 POLL_MAX_MINUTES = int(_opt("POLL_MAX_MINUTES", "30"))
+# Health signal: one "heartbeat" log line this often (0 = off).
+HEARTBEAT_SECONDS = int(_opt("HEARTBEAT_SECONDS", "300"))
 
 # A relative DATABASE_PATH is relative to the project root.
 DATABASE_PATH = str(BASE / _opt("DATABASE_PATH", "traveldesk.db"))

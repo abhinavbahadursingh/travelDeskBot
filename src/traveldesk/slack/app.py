@@ -1575,6 +1575,14 @@ def _resume_unfinished_bookings(client):
         log.info("resumed %d in-flight booking(s) after restart", resumed)
 
 
+def _heartbeat(stop: threading.Event, interval: float, started: float) -> None:
+    """Log one line every `interval` seconds so a stalled process shows up in bot.log."""
+    while not stop.wait(interval):
+        log.info(
+            "heartbeat: alive, uptime %ds, threads %d", time.monotonic() - started, threading.active_count()
+        )
+
+
 def main() -> None:
     """Start the bot (Socket Mode). Run with: python -m traveldesk"""
     log.info(
@@ -1586,4 +1594,11 @@ def main() -> None:
     if not secure_store.is_configured():
         log.warning("TRAVELDESK_DATA_KEY not set: passport details cannot be collected or stored")
     _resume_unfinished_bookings(app.client)
+    if config.HEARTBEAT_SECONDS > 0:
+        threading.Thread(
+            target=_heartbeat,
+            args=(threading.Event(), config.HEARTBEAT_SECONDS, time.monotonic()),
+            daemon=True,
+            name="heartbeat",
+        ).start()
     SocketModeHandler(app, config.SLACK_APP_TOKEN).start()
