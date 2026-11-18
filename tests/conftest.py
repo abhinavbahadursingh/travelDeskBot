@@ -1,9 +1,9 @@
 """Set up a safe environment for all tests.
 
-Fills every required .env variable with stub values and points DATABASE_PATH
-at a tmp file, so importing config/db/agent never touches real credentials or
-the production SQLite file. No real Slack / LetsFG / Claude call is
-made in any test.
+The project root (TRAVELDESK_HOME) is a fresh temp folder holding a stub
+travellers.json and the SQLite file, and every required setting gets a stub
+value. The real .env, travellers.json and traveldesk.db are never read or
+touched. No real Slack / LetsFG / Claude call is made in any test.
 """
 
 from __future__ import annotations
@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 _TMP = Path(tempfile.mkdtemp(prefix="traveldesk-test-"))
+atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 
+os.environ["TRAVELDESK_HOME"] = str(_TMP)
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test")
 os.environ.setdefault("SLACK_APP_TOKEN", "xapp-test")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -32,12 +34,7 @@ os.environ.setdefault("DATABASE_PATH", str(_TMP / "traveldesk.db"))
 # Throwaway key so tests never touch the real encrypted store.
 os.environ["TRAVELDESK_DATA_KEY"] = "pR0m9Hn8m5d1G3Wv9h0V4Zr1C3x2s7QnJ6bK8yT5uE0="
 
-_travellers = ROOT / "travellers.json"
-_backup = None
-if _travellers.exists():
-    _backup = _TMP / "travellers.json.bak"
-    shutil.copy(_travellers, _backup)
-_travellers.write_text(
+(_TMP / "travellers.json").write_text(
     json.dumps(
         {
             "UEMP1": {
@@ -49,20 +46,3 @@ _travellers.write_text(
         }
     )
 )
-
-
-def _restore_travellers():
-    try:
-        if _backup is not None:
-            shutil.copy(_backup, _travellers)
-        else:
-            _travellers.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-atexit.register(_restore_travellers)
-
-
-def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
-    _restore_travellers()

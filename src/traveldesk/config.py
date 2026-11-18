@@ -1,4 +1,10 @@
-"""Loads settings from .env and travellers.json."""
+"""Loads settings from .env and travellers.json.
+
+Everything is read from one project root:
+  TRAVELDESK_HOME (environment variable; not read from .env) if set,
+  otherwise the current working directory.
+That folder holds .env, travellers.json and, by default, traveldesk.db.
+"""
 
 import json
 import os
@@ -6,7 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-BASE = Path(__file__).resolve().parents[2]  # project root (src/traveldesk/config.py)
+BASE = Path(os.getenv("TRAVELDESK_HOME") or Path.cwd()).resolve()
 load_dotenv(BASE / ".env")
 
 
@@ -34,8 +40,6 @@ _req("ANTHROPIC_API_KEY")  # read by the anthropic SDK itself
 # newer Anthropic release can be rolled in without a code change.
 CLAUDE_HAIKU_MODEL = _opt("CLAUDE_HAIKU_MODEL", "claude-haiku-5-5")
 CLAUDE_SONNET_MODEL = _opt("CLAUDE_SONNET_MODEL", "claude-sonnet-5-5")
-# Legacy single-model env var still accepted; defaults to the Sonnet id.
-CLAUDE_MODEL = _opt("CLAUDE_MODEL", CLAUDE_SONNET_MODEL)
 
 # LetsFG Developer REST API (search + book with X-API-Key).
 # LETSFG_TOKEN is still accepted as the key for existing .env files.
@@ -62,7 +66,8 @@ ALT_WINDOW_HOURS = float(_opt("ALT_WINDOW_HOURS", "3"))
 POLL_SECONDS = int(_opt("POLL_SECONDS", "45"))
 POLL_MAX_MINUTES = int(_opt("POLL_MAX_MINUTES", "30"))
 
-DATABASE_PATH = _opt("DATABASE_PATH", str(BASE / "traveldesk.db"))
+# A relative DATABASE_PATH is relative to the project root.
+DATABASE_PATH = str(BASE / _opt("DATABASE_PATH", "traveldesk.db"))
 
 _travellers_file = BASE / "travellers.json"
 if not _travellers_file.exists():
