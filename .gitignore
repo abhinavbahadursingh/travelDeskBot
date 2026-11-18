@@ -1,6 +1,29 @@
+# secrets and local data
 .env
 travellers.json
-traveldesk.db
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
 bot.log
+*.log
+
+# python
 .venv/
 __pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
