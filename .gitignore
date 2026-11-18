@@ -9,7 +9,7 @@ bot.log
 *.log
 
 # python
-.venv/
+.venv*/
 __pycache__/
 *.py[cod]
 *.egg-info/
