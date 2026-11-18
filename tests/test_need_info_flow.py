@@ -14,12 +14,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app as bot_app
-import db
-import letsfg_booking
-import letsfg_rest
-import secure_store
-import traveller_profile as tp
+from traveldesk.booking import letsfg_booking
+from traveldesk.booking import traveller_profile as tp
+from traveldesk.clients import letsfg_rest
+from traveldesk.slack import app as bot_app
+from traveldesk.storage import db, secure_store
 
 PASSPORT_NO = "Z9081726"
 BASIC = {
@@ -67,7 +66,7 @@ ORIGINAL = offer("OFF-1", "2026-12-05T07:10:00", 5200)
 
 
 def picked(**extra):
-    import flight_scope
+    from traveldesk.booking import flight_scope
 
     return {
         "status": "picked",

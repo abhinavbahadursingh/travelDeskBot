@@ -13,9 +13,9 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-import db
-import letsfg_booking
-import letsfg_rest
+from traveldesk.booking import letsfg_booking
+from traveldesk.clients import letsfg_rest
+from traveldesk.storage import db
 
 # Synthetic fixture for tests only — not a real person or document.
 TRAVELLER = {
@@ -294,8 +294,8 @@ def test_rest_missing_traveller_details_never_calls_api(monkeypatch):
 
 
 def _watch(monkeypatch, api, status_script):
-    import app as bot_app
-    import claude_agent
+    from traveldesk.agents import claude_agent
+    from traveldesk.slack import app as bot_app
 
     api({("GET", "/flights/bookings/BKG-E2E"): status_script})
     monkeypatch.setattr(bot_app.config, "POLL_SECONDS", 0)
@@ -365,7 +365,7 @@ def test_poll_failed_saves_nothing(monkeypatch, api):
 
 
 def _claude(monkeypatch, offers, choice, max_price=None):
-    import claude_agent
+    from traveldesk.agents import claude_agent
 
     monkeypatch.setattr(claude_agent.config, "MAX_PRICE", max_price)
     monkeypatch.setattr(
@@ -431,7 +431,7 @@ def test_claude_rest_pick_unreadable_choice_is_failed_not_no_match(monkeypatch):
 
 
 def test_plain_json_reports_truncation(monkeypatch):
-    import claude_agent
+    from traveldesk.agents import claude_agent
 
     resp = SimpleNamespace(
         content=[

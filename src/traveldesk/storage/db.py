@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from datetime import datetime
 
-import config
+from traveldesk import config
 
 _lock = threading.Lock()
 

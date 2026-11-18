@@ -14,12 +14,12 @@ import pytest
 @pytest.fixture
 def claude_mod(monkeypatch):
     """Reload the Claude agent against a fake Anthropic client."""
-    for mod in ("config", "claude_agent"):
+    for mod in ("traveldesk.config", "traveldesk.agents.claude_agent"):
         sys.modules.pop(mod, None)
-    import claude_agent  # noqa: WPS433 — intentional re-import
+    from traveldesk.agents import claude_agent  # noqa: WPS433 — intentional re-import
 
     yield claude_agent
-    for mod in ("config", "claude_agent", "agent"):
+    for mod in ("traveldesk.config", "traveldesk.agents.claude_agent", "traveldesk.agents"):
         sys.modules.pop(mod, None)
 
 
@@ -151,7 +151,7 @@ def test_confirm_never_calls_anthropic(claude_mod, monkeypatch):
 
 
 def test_record_usage_writes_to_db(claude_mod):
-    import db
+    from traveldesk.storage import db
 
     row_id, _ = db.new_request("UEMP1", "DEL BOM usage", "claude")
     resp = _FakeResp("ok", input_tokens=1234, output_tokens=56)

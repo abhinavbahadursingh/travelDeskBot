@@ -17,12 +17,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app as bot_app
-import db
-import letsfg_booking
-import letsfg_rest
-import secure_store
-import traveller_profile as tp
 from tests.test_need_info_flow import (  # noqa: F401 — fixtures
     ADDRESS,
     BASIC,
@@ -35,6 +29,11 @@ from tests.test_need_info_flow import (  # noqa: F401 — fixtures
     picked,
     texts,
 )
+from traveldesk.booking import letsfg_booking
+from traveldesk.booking import traveller_profile as tp
+from traveldesk.clients import letsfg_rest
+from traveldesk.slack import app as bot_app
+from traveldesk.storage import db, secure_store
 
 EVERYONE = (
     "The travellers are missing details an airline checkout requires: "

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "traveldesk"
 version = "0.1.0"
@@ -21,8 +25,12 @@ dev = [
     "pre-commit>=4,<5",
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", "."]
 addopts = "-q"
 
 [tool.ruff]
@@ -41,5 +49,4 @@ ignore = [
 "tests/**" = ["B011", "BLE001", "F811"]  # F811: fixtures imported from other test modules
 
 [tool.ruff.lint.isort]
-known-first-party = ["agent", "app", "claude_agent", "config", "db", "flight_scope",
-                     "letsfg_booking", "letsfg_rest", "secure_store", "traveller_profile"]
+known-first-party = ["traveldesk", "tests"]

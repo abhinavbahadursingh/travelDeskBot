@@ -14,13 +14,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app as bot_app
-import db
-import flight_scope
-import letsfg_booking
-import letsfg_rest
-import secure_store
-import traveller_profile as tp
+from traveldesk.booking import flight_scope, letsfg_booking
+from traveldesk.booking import traveller_profile as tp
+from traveldesk.clients import letsfg_rest
+from traveldesk.slack import app as bot_app
+from traveldesk.storage import db, secure_store
 
 TODAY = date(2026, 11, 18)
 PASSPORT_NO = "Z9081726"
@@ -96,7 +94,7 @@ def test_last_flight_date_uses_return_leg():
 
 
 def test_claude_rest_pick_records_domestic_flag(monkeypatch):
-    import claude_agent
+    from traveldesk.agents import claude_agent
 
     monkeypatch.setattr(claude_agent.config, "MAX_PRICE", None)
     offers = [{"id": "OFF-1", "price_total": 5000, "outbound": {"segments": [seg("DEL", "BOM")]}}]

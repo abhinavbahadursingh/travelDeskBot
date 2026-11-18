@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app as bot_app
-import traveller_profile as tp
+from traveldesk.booking import traveller_profile as tp
+from traveldesk.slack import app as bot_app
 
 PROFILE = {"given_name": "Raj", "family_name": "Gupta", "email": "raj@example.com"}
 

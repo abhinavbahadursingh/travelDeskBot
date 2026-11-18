@@ -15,11 +15,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import app as bot_app
-import db
-import letsfg_booking
-import secure_store
-import traveller_profile as tp
+from traveldesk.booking import letsfg_booking
+from traveldesk.booking import traveller_profile as tp
+from traveldesk.slack import app as bot_app
+from traveldesk.storage import db, secure_store
 
 TODAY = date(2026, 11, 17)
 PASSPORT_NO = "Z9081726"
@@ -417,7 +416,7 @@ def test_sensitive_values_never_logged(user, threads, caplog, monkeypatch):
     tp.validate({**VALID, "passport_expiry": "2020-01-01"}, for_booking=True)
     secure_store.load(uid)
 
-    import letsfg_rest
+    from traveldesk.clients import letsfg_rest
 
     monkeypatch.setattr(
         letsfg_rest,

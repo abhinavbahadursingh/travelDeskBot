@@ -28,11 +28,10 @@ from datetime import date
 
 import anthropic
 
-import config
-import db
-import flight_scope
-import letsfg_booking
-import letsfg_rest
+from traveldesk import config
+from traveldesk.booking import flight_scope, letsfg_booking
+from traveldesk.clients import letsfg_rest
+from traveldesk.storage import db
 
 log = logging.getLogger("claude_agent")
 

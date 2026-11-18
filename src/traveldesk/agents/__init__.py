@@ -18,5 +18,5 @@ _cache: ModuleType | None = None
 def get_agent() -> ModuleType:
     global _cache
     if _cache is None:
-        _cache = importlib.import_module("claude_agent")
+        _cache = importlib.import_module("traveldesk.agents.claude_agent")
     return _cache

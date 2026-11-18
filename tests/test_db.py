@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import db
+from traveldesk.storage import db
 
 
 def test_new_request_and_update():

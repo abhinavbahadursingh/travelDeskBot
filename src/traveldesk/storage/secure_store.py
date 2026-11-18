@@ -19,8 +19,8 @@ from datetime import datetime
 
 from cryptography.fernet import Fernet, InvalidToken
 
-import config
-import db
+from traveldesk import config
+from traveldesk.storage import db
 
 log = logging.getLogger("secure_store")
 

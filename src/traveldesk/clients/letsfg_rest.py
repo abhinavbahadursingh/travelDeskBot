@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-import config
+from traveldesk import config
 
 log = logging.getLogger("letsfg_rest")
 

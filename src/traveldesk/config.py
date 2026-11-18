@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).resolve().parents[2]  # project root (src/traveldesk/config.py)
 load_dotenv(BASE / ".env")
 
 

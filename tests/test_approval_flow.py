@@ -10,9 +10,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import app as bot_app
-import config
-import db
+from traveldesk import config
+from traveldesk.slack import app as bot_app
+from traveldesk.storage import db
 
 
 def _body(user: str):

@@ -14,9 +14,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-import db
-import letsfg_rest
-import traveller_profile
+from traveldesk.booking import traveller_profile
+from traveldesk.clients import letsfg_rest
+from traveldesk.storage import db
 
 log = logging.getLogger("letsfg_booking")
 

@@ -24,14 +24,11 @@ from datetime import date, datetime
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-import agent as agent_factory
-import config
-import db
-import flight_scope
-import letsfg_booking
-import letsfg_rest
-import secure_store
-import traveller_profile
+from traveldesk import agents as agent_factory
+from traveldesk import config
+from traveldesk.booking import flight_scope, letsfg_booking, traveller_profile
+from traveldesk.clients import letsfg_rest
+from traveldesk.storage import db, secure_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1578,7 +1575,8 @@ def _resume_unfinished_bookings(client):
         log.info("resumed %d in-flight booking(s) after restart", resumed)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the bot (Socket Mode). Run with: python -m traveldesk"""
     log.info(
         "TravelDesk bot starting (provider=%s, DRY_RUN=%s)",
         config.AI_PROVIDER,

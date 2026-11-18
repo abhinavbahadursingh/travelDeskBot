@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import sys
 
-import db
-import letsfg_booking
+from traveldesk.booking import letsfg_booking
+from traveldesk.storage import db
 
 
 def test_validate_traveller_reports_missing_fields():
@@ -28,9 +28,9 @@ def test_confirm_is_idempotent_for_same_booking_id(monkeypatch):
     """Second call to confirm() for a row with an existing booking_ref must
     not book again — this is the real-world duplicate-click /
     resume-after-restart protection."""
-    sys.modules.pop("config", None)
-    sys.modules.pop("claude_agent", None)
-    import claude_agent  # fresh
+    sys.modules.pop("traveldesk.config", None)
+    sys.modules.pop("traveldesk.agents.claude_agent", None)
+    from traveldesk.agents import claude_agent  # fresh
 
     monkeypatch.setattr(claude_agent.config, "DRY_RUN", False)
     row_id, _ = db.new_request("UEMP1", "DEL BOM idem", "claude")
@@ -74,9 +74,9 @@ def test_confirm_is_idempotent_for_same_booking_id(monkeypatch):
     assert out2["booking_ref"] == "BK-IDEM"
     assert "already issued" in out2["message"]
 
-    sys.modules.pop("config", None)
-    sys.modules.pop("claude_agent", None)
-    sys.modules.pop("agent", None)
+    sys.modules.pop("traveldesk.config", None)
+    sys.modules.pop("traveldesk.agents.claude_agent", None)
+    sys.modules.pop("traveldesk.agents", None)
 
 
 def test_claim_booking_start_only_fires_once():

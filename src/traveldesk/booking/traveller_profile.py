@@ -27,8 +27,8 @@ import stat
 from dataclasses import dataclass, field
 from datetime import date
 
-import config
-import secure_store
+from traveldesk import config
+from traveldesk.storage import secure_store
 
 log = logging.getLogger("traveller_profile")
 
