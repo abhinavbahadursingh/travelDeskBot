@@ -4,7 +4,7 @@ Schema is created on first connect and migrated in place; existing rows are kept
 
 Two tables:
   * bookings  — one row per Slack request, from search through PNR.
-  * ai_usage  — one row per Claude (or Groq) API call, with token counts
+  * ai_usage  — one row per Claude API call, with token counts
                 and estimated USD cost, linked back to a booking.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ _COLUMNS = [
     ("payment_status", "TEXT"),           # unpaid / awaiting_payment / paid / failed
     ("manager_message_ts", "TEXT"),       # Slack ts of the confirmation card
     ("manager_channel", "TEXT"),          # DM channel the card lives in
-    ("provider", "TEXT"),                 # ai provider used (claude/groq)
+    ("provider", "TEXT"),                 # ai provider used (claude)
     ("charged_amount", "REAL"),           # actual amount charged; set only on completed + PNR
 ]
 
@@ -49,7 +49,7 @@ _AI_USAGE_COLUMNS = [
     ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"),
     ("created_at", "TEXT"),
     ("booking_id", "INTEGER"),            # nullable; FK to bookings.id
-    ("provider", "TEXT"),                 # claude / groq
+    ("provider", "TEXT"),                 # claude
     ("model", "TEXT"),                    # exact model id used
     ("task_kind", "TEXT"),                # classify / pick / confirm / status / ...
     ("input_tokens", "INTEGER"),
@@ -353,8 +353,6 @@ _PRICING_PER_MTOK = {
     "haiku": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
     "sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
     "opus": {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
-    # Groq Llama pricing is roughly 1-3 orders of magnitude cheaper; treated as 0
-    # unless the model id contains one of the keys above.
 }
 
 

@@ -14,13 +14,10 @@ import pytest
 @pytest.fixture
 def claude_mod(monkeypatch):
     """Reload the Claude agent against a fake Anthropic client."""
-    monkeypatch.setenv("AI_PROVIDER", "claude")
     for mod in ("config", "claude_agent"):
         sys.modules.pop(mod, None)
     import claude_agent  # noqa: WPS433 — intentional re-import
     yield claude_agent
-    # Reset provider so other tests keep working.
-    monkeypatch.setenv("AI_PROVIDER", "groq")
     for mod in ("config", "claude_agent", "agent"):
         sys.modules.pop(mod, None)
 
@@ -106,37 +103,37 @@ def test_pick_model_for_does_not_call_classifier(claude_mod):
 
 def test_confirm_never_calls_anthropic(claude_mod, monkeypatch):
     """Payment-affecting confirm must not touch the LLM at all — it is a
-    deterministic MCP call via `letsfg_booking.book_flight`."""
-    beta_calls = []
+    deterministic REST call via `letsfg_booking.book`."""
+    llm_calls = []
 
     def fail_if_called(**kw):
-        beta_calls.append(kw)
+        llm_calls.append(kw)
         raise AssertionError("confirm() must not call Anthropic")
 
     claude_mod._client_singleton = SimpleNamespace(
         beta=SimpleNamespace(messages=SimpleNamespace(create=fail_if_called)),
-        messages=SimpleNamespace(create=lambda **kw: _FakeResp("simple")),
+        messages=SimpleNamespace(create=fail_if_called),
     )
     monkeypatch.setattr(claude_mod.config, "DRY_RUN", False)
 
-    # Stub the booking helper so no MCP call goes out either.
+    # Stub the booking helper so no LetsFG call goes out either.
     captured = {}
 
-    def fake_book(search_id, offer_id, traveller):
-        captured["search_id"] = search_id
-        captured["offer_id"] = offer_id
+    def fake_book(picked, traveller, booking_id):
+        captured["search_id"] = picked["search_id"]
+        captured["offer_id"] = picked["offer_id"]
         captured["traveller"] = traveller
         return {"status": "awaiting_approval", "booking_ref": "BK-1",
                 "approve_url": "https://pay/BK-1", "message": ""}
 
-    monkeypatch.setattr(claude_mod.letsfg_booking, "book_flight", fake_book)
+    monkeypatch.setattr(claude_mod.letsfg_booking, "book", fake_book)
 
     out = claude_mod.confirm(
-        {"status": "picked", "search_id": "S", "offer_id": "O",
+        {"status": "picked", "backend": "rest", "search_id": "S", "offer_id": "O",
          "summary": "x", "price": 1, "currency": "INR"},
         {"given_name": "A", "family_name": "B", "email": "a@b", "phone": "+1"},
     )
-    assert beta_calls == []
+    assert llm_calls == []
     assert out.get("status") == "awaiting_approval"
     assert out.get("booking_ref") == "BK-1"
     assert captured["search_id"] == "S"
@@ -161,39 +158,3 @@ def test_record_usage_writes_to_db(claude_mod):
     assert r["output_tokens"] == 56
     assert r["provider"] == "claude"
     assert r["est_cost_usd"] > 0
-
-
-def test_fallback_switches_model_on_rate_limit(claude_mod, monkeypatch):
-    import anthropic
-
-    attempts = []
-
-    class _FailThenPass:
-        def __init__(self):
-            self.calls = 0
-
-        def create(self, **kw):
-            attempts.append(kw["model"])
-            self.calls += 1
-            if self.calls == 1:
-                raise anthropic.RateLimitError(
-                    message="rate limited",
-                    response=SimpleNamespace(request=None, status_code=429, headers={}),
-                    body=None,
-                )
-            return _FakeResp('{"status":"picked","summary":"x","price":1,"currency":"INR"}')
-
-    fake = _FailThenPass()
-    claude_mod._client_singleton = SimpleNamespace(
-        beta=SimpleNamespace(messages=SimpleNamespace(create=fake.create)),
-        messages=SimpleNamespace(create=lambda **kw: _FakeResp("simple")),
-    )
-    monkeypatch.setattr(claude_mod.config, "CLAUDE_FALLBACK", True)
-    out = claude_mod._ask(
-        "sys", "p", ["find_airports"],
-        model=claude_mod.config.CLAUDE_SONNET_MODEL,
-        task_kind="pick",
-    )
-    assert out.get("status") == "picked"
-    assert attempts[0] == claude_mod.config.CLAUDE_SONNET_MODEL
-    assert attempts[1] == claude_mod.config.CLAUDE_HAIKU_MODEL

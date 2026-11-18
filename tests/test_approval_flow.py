@@ -28,7 +28,7 @@ def _action(row_id: int):
 
 
 def test_only_requesting_employee_can_confirm():
-    row_id, _ = db.new_request("UEMP1", "DEL BOM", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL BOM", "claude")
     db.update(row_id, status="awaiting_confirm")
     client = MagicMock()
     # Different user clicks — must be rejected, row unchanged.
@@ -40,7 +40,7 @@ def test_only_requesting_employee_can_confirm():
 
 
 def test_requesting_employee_can_confirm(monkeypatch):
-    row_id, _ = db.new_request("UEMP1", "DEL BOM own", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL BOM own", "claude")
     db.update(row_id, status="awaiting_confirm",
               details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
     # Prevent background thread.
@@ -54,7 +54,7 @@ def test_requesting_employee_can_confirm(monkeypatch):
 
 
 def test_duplicate_clicks_only_count_once(monkeypatch):
-    row_id, _ = db.new_request("UEMP1", "DEL CCU", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL CCU", "claude")
     db.update(row_id, status="awaiting_confirm",
               details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
     monkeypatch.setattr(bot_app.threading, "Thread",
@@ -68,7 +68,7 @@ def test_duplicate_clicks_only_count_once(monkeypatch):
 
 
 def test_cancel_notifies_employee(monkeypatch):
-    row_id, _ = db.new_request("UEMP1", "DEL HYD", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL HYD", "claude")
     db.update(row_id, status="awaiting_confirm", details={"summary": "x"})
     # the agent should not be called when cancelling
     monkeypatch.setattr(bot_app.agent_factory, "get_agent",
@@ -89,7 +89,7 @@ def test_dry_run_never_books(monkeypatch):
         @staticmethod
         def confirm(picked, traveller, **_kw):
             return {**picked, "status": "picked",
-                    "message": "DRY_RUN", "provider": "groq"}
+                    "message": "DRY_RUN", "provider": "claude"}
 
         @staticmethod
         def booking_status(_ref, **_kw):
@@ -98,7 +98,7 @@ def test_dry_run_never_books(monkeypatch):
     monkeypatch.setattr(bot_app.agent_factory, "get_agent", lambda: FakeAgent)
     client = MagicMock()
     client.conversations_open.return_value = {"channel": {"id": "CEMP"}}
-    row_id, _ = db.new_request("UEMP1", "DRY RUN", "groq")
+    row_id, _ = db.new_request("UEMP1", "DRY RUN", "claude")
     db.update(row_id, status="awaiting_confirm",
               details={"status": "picked", "summary": "x", "price": 100, "currency": "INR"})
     bot_app.run_booking(client, row_id, "UEMP1",

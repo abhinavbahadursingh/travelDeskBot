@@ -3,7 +3,7 @@
 Exercises the full happy path:
   /traveldesk → pick → employee confirmation (Block Kit) → confirm → poll → PNR.
 
-Nothing here hits Slack, Groq, Claude, or LetsFG. DRY_RUN is forced off so
+Nothing here hits Slack, Claude, or LetsFG. DRY_RUN is forced off so
 confirm() is actually invoked, but the agent module itself is a stub, so no
 real booking tool is ever called.
 """
@@ -33,7 +33,7 @@ class StubAgent:
             "search_id": "S42",
             "offer_id": "O7",
             "offer_link": "https://letsfg.co/offer/O7",
-            "provider": "groq",
+            "provider": "claude",
         }
 
     @classmethod
@@ -44,21 +44,21 @@ class StubAgent:
             "status": "awaiting_approval",
             "booking_ref": "BK-123",
             "approve_url": "https://letsfg.co/pay/BK-123",
-            "provider": "groq",
+            "provider": "claude",
         }
 
     @classmethod
     def booking_status(cls, booking_ref, **_kw):
         cls.status_calls.append(booking_ref)
         if len(cls.status_calls) == 1:
-            return {"status": "booking_in_progress", "provider": "groq"}
+            return {"status": "booking_in_progress", "provider": "claude"}
         return {
             "status": "completed",
             "pnr": "ABC123",
             "total": 4200,
             "currency": "INR",
             "ticket_url": "https://letsfg.co/ticket/ABC123",
-            "provider": "groq",
+            "provider": "claude",
         }
 
 
@@ -155,7 +155,7 @@ def test_approve_url_sets_awaiting_payment(monkeypatch):
     class AwaitingAgent(StubAgent):
         @classmethod
         def booking_status(cls, booking_ref, **_kw):
-            return {"status": "awaiting_approval", "provider": "groq"}
+            return {"status": "awaiting_approval", "provider": "claude"}
 
     monkeypatch.setattr(config, "DRY_RUN", False)
     monkeypatch.setattr(config, "POLL_SECONDS", 0)
@@ -166,7 +166,7 @@ def test_approve_url_sets_awaiting_payment(monkeypatch):
     client.conversations_open.return_value = {"channel": {"id": "CDM"}}
     client.chat_postMessage.return_value = {"ts": "1.0", "channel": "CDM"}
 
-    row_id, _ = db.new_request("UEMP1", "DEL CCU awaiting", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL CCU awaiting", "claude")
     db.update(row_id, status="awaiting_confirm",
               details={"status": "picked", "search_id": "S", "offer_id": "O",
                        "summary": "x", "price": 100, "currency": "INR"})
@@ -181,19 +181,8 @@ def test_approve_url_sets_awaiting_payment(monkeypatch):
     assert row["status"] == "timeout"
 
 
-def test_groq_tool_allowlist_refuses_book_flight():
-    """Defence-in-depth: even if a model emits 'book_flight', we must not run it."""
-    import groq_agent
-    out, structured = groq_agent._run_tool_call("book_flight", '{"search_id":"S"}')
-    assert "not allowed" in out["error"]
-    assert structured is None
-
-    out2, _ = groq_agent._run_tool_call("get_flight_booking", '{"booking_ref":"X"}')
-    assert "not allowed" in out2["error"]
-
-
 def test_startup_resume_picks_up_booking_ref(monkeypatch):
-    row_id, _ = db.new_request("UEMP1", "DEL HYD resume", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL HYD resume", "claude")
     db.update(row_id, status="awaiting_approval", booking_ref="BK-RESUME")
 
     spawned = []

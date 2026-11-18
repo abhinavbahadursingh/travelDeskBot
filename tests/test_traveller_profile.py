@@ -253,15 +253,6 @@ def test_complete_profile_books_without_modal(user, threads):
     assert threads and threads[0][0] is bot_app.run_booking
 
 
-def test_mcp_backend_does_not_require_passport(user, threads):
-    uid = user("UMCP")
-    row_id = _row(uid, backend="mcp")
-    client = MagicMock()
-    bot_app._handle_decision(_body(uid), client, {"value": json.dumps({"row": row_id})}, "confirmed")
-    client.views_open.assert_not_called()
-    assert db.get(row_id)["status"] == "confirmed"
-
-
 def test_invalid_search_fields_send_admin_message(user, threads):
     uid = user("UADMIN", {**SEARCH_ONLY, "email": "a@b"})
     row_id = _row(uid)

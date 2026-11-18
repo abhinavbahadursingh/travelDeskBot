@@ -1,32 +1,22 @@
-"""Deterministic LetsFG booking helpers.
+"""Deterministic LetsFG booking via the Developer REST API.
 
-Both provider agents (Claude and Groq) call these for the payment-affecting
-steps — `book_flight` and `get_flight_booking` — instead of letting the LLM
-drive the tool calls itself.
-
-Why:
-* The LLM can forget to pass passengers / contact_email, or try to invent a
-  booking summary before the airline PNR exists.
-* Deterministic Python here lets us validate traveller details up front,
-  detect the "Developer API key" error cleanly, and refuse to report success
-  without a confirmed PNR.
-
-The underlying transport is the project's own `mcp_client.MCPClient` against
-`LETSFG_MCP_URL` using the `LETSFG_TOKEN` bearer header. Anthropic's native
-MCP connector is still used for the *search* phase in `claude_agent`.
+The payment-affecting steps — book and booking status — are plain Python,
+never an LLM:
+* the passenger payload comes from the validated traveller profile, never
+  from a model;
+* LetsFG's need_info answers are handled here (retry once with saved
+  details, otherwise ask the traveller for exactly the missing fields);
+* success is never reported without a booking_id / PNR from LetsFG.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-import json
 import uuid
 
 import config
 import db
 import letsfg_rest
-import mcp_client
 import traveller_profile
 
 log = logging.getLogger("letsfg_booking")
@@ -45,24 +35,15 @@ def idempotency_key(booking_id: int | None, attempt: int = 0) -> str:
     return f"td-{booking_id}-{row.get('request_key') or 'x'}"[:60 - len(suffix)] + suffix
 
 
-def _backend_for(booking_id: int | None) -> str:
-    if booking_id is not None:
-        row = db.get(booking_id) or {}
-        try:
-            details = json.loads(row.get("details") or "{}")
-        except (TypeError, ValueError):
-            details = {}
-        if isinstance(details, dict) and details.get("backend") in ("rest", "mcp"):
-            return details["backend"]
-    return config.LETSFG_BACKEND
-
-
 def book(picked: dict, traveller: dict, booking_id: int | None = None) -> dict:
-    """Book via the backend that produced the offer (IDs aren't portable)."""
-    search_id, offer_id = picked.get("search_id"), picked.get("offer_id")
+    """Book a REST-picked offer. Offers from the retired MCP flow (no
+    "backend": "rest") can't be booked here: their IDs aren't REST IDs."""
     if picked.get("backend") == "rest":
         return _book_rest(picked, traveller, booking_id)
-    return book_flight(search_id, offer_id, traveller)
+    log.warning("booking row=%s refused: offer was not picked via the LetsFG REST API", booking_id)
+    return {"status": "failed",
+            "message": "This request was made with an older version of the bot and can't be "
+                       "booked. Please send the request again."}
 
 
 def _book_rest(picked: dict, traveller: dict, booking_id: int | None) -> dict:
@@ -224,23 +205,10 @@ def _is_document_field(name: str) -> bool:
 
 
 def status(booking_ref: str, booking_id: int | None = None) -> dict:
-    if _backend_for(booking_id) == "rest":
-        return letsfg_rest.get_booking(booking_ref)
-    return get_flight_booking(booking_ref)
+    return letsfg_rest.get_booking(booking_ref)
+
 
 REQUIRED_PASSENGER_FIELDS = ("given_name", "family_name", "email")
-
-_mcp_singleton: mcp_client.MCPClient | None = None
-
-
-def _mcp() -> mcp_client.MCPClient:
-    """Lazy MCPClient so importing this module never opens a connection."""
-    global _mcp_singleton
-    if _mcp_singleton is None:
-        _mcp_singleton = mcp_client.MCPClient(
-            config.LETSFG_MCP_URL, config.LETSFG_TOKEN
-        )
-    return _mcp_singleton
 
 
 def validate_traveller(traveller: dict | None) -> str | None:
@@ -253,145 +221,3 @@ def validate_traveller(traveller: dict | None) -> str | None:
     if missing:
         return f"traveller profile is missing required fields: {', '.join(missing)}"
     return None
-
-
-def _book_args(search_id: str, offer_id: str, traveller: dict) -> dict:
-    return {
-        "search_id": search_id,
-        "offer_id": offer_id,
-        "passengers": [
-            {
-                "given_name": traveller["given_name"],
-                "family_name": traveller["family_name"],
-                "email": traveller["email"],
-                "phone": str(traveller.get("phone", "")).strip(),
-            }
-        ],
-        "contact_email": traveller["email"],
-    }
-
-
-def _looks_like_dev_key_error(msg: str) -> bool:
-    low = (msg or "").lower()
-    return (
-        "developer api key" in low
-        or "traveller card" in low
-        or "letsfg.co/connect" in low
-        or "/developers/api" in low
-    )
-
-
-def book_flight(search_id: str, offer_id: str, traveller: dict) -> dict:
-    """Call LetsFG MCP `book_flight` deterministically.
-
-    Returns one of:
-      {"status": "need_info", "message": ...}          — traveller incomplete
-      {"status": "failed", "message": ...}             — transport/arg error
-      {"status": "setup_required", "message": ...}     — Dev key / card missing
-      {"status": "awaiting_approval"|..., "booking_ref": ..., "approve_url": ...}
-    """
-    err = validate_traveller(traveller)
-    if err:
-        return {"status": "need_info", "message": err}
-    if not search_id or not offer_id:
-        return {"status": "failed",
-                "message": "Missing search_id/offer_id from the pick step."}
-
-    args = _book_args(search_id, offer_id, traveller)
-    try:
-        result = _mcp().call_tool("book_flight", args)
-    except mcp_client.MCPError as e:
-        emsg = str(e)
-        if _looks_like_dev_key_error(emsg):
-            return {
-                "status": "setup_required",
-                "message": (
-                    "LetsFG rejected the booking: the configured LETSFG_TOKEN "
-                    "looks like a Developer API key, but `book_flight` on the "
-                    "MCP endpoint requires an MCP-scoped token with a traveller "
-                    "card connected at letsfg.co/connect. Ask adam@letsfg.co "
-                    "for an MCP-scoped token for this workspace."
-                ),
-            }
-        log.warning("book_flight MCP error: %s", emsg[:400])
-        return {"status": "failed", "message": emsg[:400]}
-    except Exception as e:  # noqa: BLE001
-        log.exception("book_flight call failed")
-        return {"status": "failed",
-                "message": f"{type(e).__name__}: {e}"[:400]}
-
-    data = mcp_client.tool_result_json(result) or {}
-    return _map_book_result(data)
-
-
-def _map_book_result(data: Any) -> dict:
-    if not isinstance(data, dict):
-        return {"status": "failed", "message": "book_flight returned non-object"}
-    status_raw = (data.get("status") or "").lower()
-    if status_raw in ("setup_required", "missing_fields", "payment_method_required"):
-        return {
-            "status": "setup_required",
-            "message": data.get("message") or status_raw,
-            "details_raw": data,
-        }
-    booking_ref = (
-        data.get("booking_ref") or data.get("id") or data.get("booking_id")
-    )
-    approve_url = data.get("approve_url") or data.get("approval_url")
-    if not booking_ref and status_raw in ("", "failed"):
-        return {"status": "failed",
-                "message": data.get("message") or "book_flight returned no booking_ref"}
-    out_status = (
-        "awaiting_approval" if approve_url
-        else (status_raw or "booking_started")
-    )
-    return {
-        "status": out_status,
-        "booking_ref": booking_ref,
-        "approve_url": approve_url,
-        "message": data.get("message", ""),
-    }
-
-
-def get_flight_booking(booking_ref: str) -> dict:
-    """Call LetsFG MCP `get_flight_booking` deterministically.
-
-    Never reports `completed` without a PNR — a `completed` status with no
-    PNR is downgraded to `needs_attention` so the bot does not mislead the
-    traveller.
-    """
-    if not booking_ref:
-        return {"status": "needs_attention", "message": "no booking_ref"}
-    try:
-        result = _mcp().call_tool(
-            "get_flight_booking", {"booking_ref": booking_ref}
-        )
-    except mcp_client.MCPError as e:
-        return {"status": "needs_attention", "message": str(e)[:400]}
-    except Exception as e:  # noqa: BLE001
-        log.exception("get_flight_booking call failed")
-        return {"status": "needs_attention",
-                "message": f"{type(e).__name__}: {e}"[:400]}
-
-    data = mcp_client.tool_result_json(result) or {}
-    return _map_status_result(data)
-
-
-def _map_status_result(data: Any) -> dict:
-    if not isinstance(data, dict):
-        return {"status": "needs_attention",
-                "message": "get_flight_booking returned non-object"}
-    status_raw = (data.get("status") or "").lower() or "booking_in_progress"
-    pnr = data.get("pnr") or data.get("booking_reference")
-    out_status = status_raw
-    # Never claim completed without a PNR.
-    if status_raw == "completed" and not pnr:
-        out_status = "needs_attention"
-    return {
-        "status": out_status,
-        "pnr": pnr,
-        "total": data.get("total") or data.get("total_price"),
-        "currency": data.get("currency") or config.CURRENCY,
-        "ticket_url": data.get("ticket_url") or data.get("itinerary_url"),
-        "message": data.get("message", ""),
-    }

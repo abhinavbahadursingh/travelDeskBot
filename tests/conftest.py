@@ -2,7 +2,7 @@
 
 Fills every required .env variable with stub values and points DATABASE_PATH
 at a tmp file, so importing config/db/agent never touches real credentials or
-the production SQLite file. No real Slack / LetsFG / Claude / Groq call is
+the production SQLite file. No real Slack / LetsFG / Claude call is
 made in any test.
 """
 from __future__ import annotations
@@ -23,14 +23,9 @@ _TMP = Path(tempfile.mkdtemp(prefix="traveldesk-test-"))
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test")
 os.environ.setdefault("SLACK_APP_TOKEN", "xapp-test")
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test")
-os.environ.setdefault("GROQ_API_KEY", "gsk_test")
-os.environ.setdefault("GROQ_MODEL", "llama-3.3-70b-versatile")
-# Default the test suite to Groq so claude_agent imports are opt-in per test.
-os.environ.setdefault("AI_PROVIDER", "groq")
 os.environ.setdefault("CLAUDE_HAIKU_MODEL", "claude-haiku-5-5")
 os.environ.setdefault("CLAUDE_SONNET_MODEL", "claude-sonnet-5-5")
-os.environ.setdefault("LETSFG_MCP_URL", "https://example.invalid/mcp")
-os.environ.setdefault("LETSFG_TOKEN", "letsfg-test")
+os.environ.setdefault("LETSFG_API_KEY", "letsfg-test")
 os.environ.setdefault("DRY_RUN", "true")
 os.environ.setdefault("DATABASE_PATH", str(_TMP / "traveldesk.db"))
 # Throwaway key so tests never touch the real encrypted store.

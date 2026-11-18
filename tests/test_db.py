@@ -15,7 +15,7 @@ def test_new_request_and_update():
 
 
 def test_claim_decision_is_single_winner():
-    row_id, _ = db.new_request("UEMP1", "DEL to HYD", "groq")
+    row_id, _ = db.new_request("UEMP1", "DEL to HYD", "claude")
     db.update(row_id, status="awaiting_confirm")
     first = db.claim_decision(row_id, "UEMP1", "confirmed")
     second = db.claim_decision(row_id, "UEMP1", "confirmed")

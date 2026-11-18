@@ -85,7 +85,6 @@ def test_last_flight_date_uses_return_leg():
 
 def test_claude_rest_pick_records_domestic_flag(monkeypatch):
     import claude_agent
-    monkeypatch.setattr(claude_agent.config, "LETSFG_BACKEND", "rest")
     monkeypatch.setattr(claude_agent.config, "MAX_PRICE", None)
     offers = [{"id": "OFF-1", "price_total": 5000, "outbound": {"segments": [seg("DEL", "BOM")]}}]
     monkeypatch.setattr(claude_agent.letsfg_rest, "search_flights",

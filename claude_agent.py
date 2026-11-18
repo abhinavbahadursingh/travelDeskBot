@@ -14,8 +14,9 @@ free-text request, with simple heuristics as a cheap fast-path. Every API
 call records its model, task kind, token counts and estimated USD cost in
 the ``ai_usage`` table via :func:`db.record_ai_usage`.
 
-The provider talks to LetsFG through Anthropic's built-in MCP connector —
-no custom MCP client needed.
+Claude never calls LetsFG itself: Python searches via the LetsFG REST API,
+Claude reads the request and chooses one offer, and booking is deterministic
+Python (see letsfg_booking).
 """
 from __future__ import annotations
 
@@ -44,14 +45,6 @@ def _client() -> anthropic.Anthropic:
     if _client_singleton is None:
         _client_singleton = anthropic.Anthropic()
     return _client_singleton
-
-
-# Only these LetsFG tools are ever enabled. Hotels, payment changes, profile
-# edits etc. stay off. If LetsFG renames a tool, update here.
-SEARCH_TOOLS = ["find_airports", "search_flights", "get_flight_results",
-                "get_flight_details"]
-BOOK_TOOLS = ["book_flight", "get_flight_booking", "stop_flight_booking"]
-STATUS_TOOLS = ["get_flight_booking"]
 
 
 # ---------------------------------------------------------------------------
@@ -127,17 +120,8 @@ def pick_model_for(task_kind: str, request: str = "",
 
 
 # ---------------------------------------------------------------------------
-# Low-level Claude call with MCP + usage tracking + fallback
+# Low-level Claude call + usage tracking
 # ---------------------------------------------------------------------------
-
-
-def _toolset(allowed: list[str]) -> dict:
-    return {
-        "type": "mcp_toolset",
-        "mcp_server_name": "letsfg",
-        "default_config": {"enabled": False},
-        "configs": {name: {"enabled": True} for name in allowed},
-    }
 
 
 def _record_usage(resp, *, task_kind: str, model: str,
@@ -163,81 +147,6 @@ def _record_usage(resp, *, task_kind: str, model: str,
         )
     except Exception as e:  # noqa: BLE001 — never let logging kill the task
         log.warning("ai_usage insert failed: %s", e)
-
-
-def _ask(system: str, prompt: str, allowed_tools: list[str],
-         *, model: str, task_kind: str,
-         booking_id: int | None = None,
-         max_rounds: int = 12,
-         allow_fallback: bool = True) -> dict:
-    """One Claude task with LetsFG tools. Returns the JSON object Claude ends with.
-
-    Tracks every round's token usage. If ``config.CLAUDE_FALLBACK`` is on
-    AND ``allow_fallback`` is True (the default), and the primary model
-    raises a transient error (rate limit / overloaded / api error), falls
-    back to the other tier once.
-
-    Payment-affecting callers (see :func:`confirm`) pass
-    ``allow_fallback=False`` so a Sonnet rate limit surfaces as an error
-    rather than silently running ``book_flight`` on Haiku.
-    """
-    models_to_try = [model]
-    if allow_fallback and config.CLAUDE_FALLBACK:
-        alt = (config.CLAUDE_HAIKU_MODEL if model == config.CLAUDE_SONNET_MODEL
-               else config.CLAUDE_SONNET_MODEL)
-        if alt and alt != model:
-            models_to_try.append(alt)
-
-    last_err: Exception | None = None
-    for attempt_model in models_to_try:
-        try:
-            return _ask_once(
-                system, prompt, allowed_tools,
-                model=attempt_model, task_kind=task_kind,
-                booking_id=booking_id, max_rounds=max_rounds,
-            )
-        except (anthropic.RateLimitError,
-                anthropic.APIConnectionError,
-                anthropic.InternalServerError) as e:
-            log.warning("Claude %s transient error on %s: %s — falling back",
-                        attempt_model, task_kind, e)
-            last_err = e
-            continue
-    assert last_err is not None
-    return {"status": "failed", "message": f"Claude unavailable: {last_err}"}
-
-
-def _ask_once(system: str, prompt: str, allowed_tools: list[str],
-              *, model: str, task_kind: str,
-              booking_id: int | None, max_rounds: int) -> dict:
-    messages = [{"role": "user", "content": prompt}]
-    resp = None
-    for _ in range(max_rounds):
-        resp = _client().beta.messages.create(
-            model=model,
-            max_tokens=4000,
-            system=system,
-            messages=messages,
-            betas=[config.MCP_BETA],
-            mcp_servers=[
-                {
-                    "type": "url",
-                    "url": config.LETSFG_MCP_URL,
-                    "name": "letsfg",
-                    "authorization_token": config.LETSFG_TOKEN,
-                }
-            ],
-            tools=[_toolset(allowed_tools)],
-        )
-        _record_usage(resp, task_kind=task_kind, model=model, booking_id=booking_id)
-        # Long tool work (a flight search takes 2-3 min) can pause the turn; continue it.
-        if resp.stop_reason == "pause_turn":
-            messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
-            continue
-        break
-
-    text = "".join(getattr(b, "text", "") for b in resp.content if b.type == "text")
-    return _extract_json(text)
 
 
 def _extract_json(text: str) -> dict:
@@ -389,58 +298,20 @@ message: reason in under 20 words"""
 
 def pick(request: str, traveller: dict, booking_id: int | None = None) -> dict:
     """Search and pick only. Never books, regardless of DRY_RUN."""
-    if config.LETSFG_BACKEND == "rest":
-        return _pick_rest(request, traveller, booking_id)
-    model = pick_model_for("pick", request, booking_id=booking_id)
-    cap = (
-        f"Never pick a flight above {config.MAX_PRICE:.0f} {config.CURRENCY} per person; "
-        "if none is under that, return status 'no_match'."
-        if config.MAX_PRICE
-        else ""
-    )
-    system = f"""{_COMMON}
-
-Today is {date.today().isoformat()}. Prices in {config.CURRENCY}. Domestic India unless stated.
-
-Steps:
-1. Work out origin, destination, date and time window (use find_airports if needed).
-   One adult, economy, one-way unless a return is asked for.
-2. Call search_flights, then call get_flight_results with wait_for_all=true repeatedly
-   until the full ranked list is in.
-3. Choose ONE offer with this rule: {config.BOOKING_RULE} {cap}
-   Never choose an offer marked NOT BOOKABLE THROUGH LETSFG.
-4. Do NOT call book_flight. This step is pick-only; booking happens after the
-   employee confirms in Slack.
-
-Final JSON keys:
-status: "picked", "no_match", "need_info" or "failed"
-summary: one line e.g. "IndiGo 6E-6218 · 24 Nov 06:05 DEL → 08:25 BOM · nonstop"
-price: number, currency: string
-search_id, offer_id, offer_link: from the results
-message: short plain explanation"""
-    prompt = (
-        f"Booking request from Slack: {request}\n"
-        f"Traveller: {json.dumps(traveller, ensure_ascii=False)}"
-    )
-    result = _ask(system, prompt, SEARCH_TOOLS,
-                  model=model, task_kind="pick", booking_id=booking_id)
-    result["provider"] = _PROVIDER
-    result["model"] = model
-    result["backend"] = "mcp"
-    return result
+    return _pick_rest(request, traveller, booking_id)
 
 
 def confirm(picked: dict, traveller: dict, booking_id: int | None = None) -> dict:
     """Book the already-picked offer. No-op in DRY_RUN.
 
-    Booking is deterministic Python: we call LetsFG's `book_flight` MCP tool
+    Booking is deterministic Python: we call LetsFG's REST `book` endpoint
     directly with the real passenger payload instead of delegating to an
     LLM. Payment-affecting work never touches a model, even Sonnet.
 
     Idempotency: if the DB row for this booking already carries a
     `booking_ref`, we return the existing record untouched. Otherwise we
     atomically transition `confirmed → booking_started` before issuing the
-    MCP call, so a Slack retry or process restart cannot double-book.
+    booking call, so a Slack retry or process restart cannot double-book.
     """
     if config.DRY_RUN:
         return {**picked, "status": "picked",

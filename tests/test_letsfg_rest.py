@@ -195,8 +195,6 @@ def test_rest_pick_books_via_rest_with_stable_row_key(monkeypatch):
         return {"status": "booking_in_progress", "booking_ref": "BKG-K"}
 
     monkeypatch.setattr(letsfg_booking.letsfg_rest, "book_flight", fake_book)
-    monkeypatch.setattr(letsfg_booking, "book_flight",
-                        lambda *a: (_ for _ in ()).throw(AssertionError("MCP used")))
     picked = {"backend": "rest", "search_id": "S", "offer_id": "O"}
     letsfg_booking.book(picked, TRAVELLER, row_id)
     letsfg_booking.book(picked, TRAVELLER, row_id)
@@ -208,14 +206,15 @@ def test_rest_pick_books_via_rest_with_stable_row_key(monkeypatch):
     assert calls[2] != calls[0]
 
 
-def test_mcp_pick_never_uses_rest(monkeypatch):
+@pytest.mark.parametrize("backend", ["mcp", None])
+def test_non_rest_pick_is_refused_without_any_call(monkeypatch, backend):
+    """Picks from the retired MCP flow carry IDs REST can't book."""
     monkeypatch.setattr(letsfg_booking.letsfg_rest, "book_flight",
                         lambda *a: (_ for _ in ()).throw(AssertionError("REST used")))
-    monkeypatch.setattr(letsfg_booking, "book_flight",
-                        lambda s, o, t: {"status": "booking_started", "booking_ref": "M1"})
-    out = letsfg_booking.book({"backend": "mcp", "search_id": "S", "offer_id": "O"},
+    out = letsfg_booking.book({"backend": backend, "search_id": "S", "offer_id": "O"},
                               TRAVELLER, None)
-    assert out["booking_ref"] == "M1"
+    assert out["status"] == "failed" and "send the request again" in out["message"]
+    assert "booking_ref" not in out
 
 
 def test_rest_missing_traveller_details_never_calls_api(monkeypatch):
@@ -231,13 +230,13 @@ def test_rest_missing_traveller_details_never_calls_api(monkeypatch):
 
 def _watch(monkeypatch, api, status_script):
     import app as bot_app
-    import groq_agent
+    import claude_agent
 
     api({("GET", "/flights/bookings/BKG-E2E"): status_script})
     monkeypatch.setattr(bot_app.config, "POLL_SECONDS", 0)
     monkeypatch.setattr(bot_app.config, "POLL_MAX_MINUTES", 1)
-    monkeypatch.setattr(bot_app.agent_factory, "get_agent", lambda: groq_agent)
-    row_id, _ = db.new_request("UEMP1", "E2E rest poll", "groq")
+    monkeypatch.setattr(bot_app.agent_factory, "get_agent", lambda: claude_agent)
+    row_id, _ = db.new_request("UEMP1", "E2E rest poll", "claude")
     db.update(row_id, status="booking_in_progress", booking_ref="BKG-E2E",
               details={"backend": "rest", "search_id": "S", "offer_id": "O"})
     client = MagicMock()
@@ -287,7 +286,6 @@ def test_poll_failed_saves_nothing(monkeypatch, api):
 
 def _claude(monkeypatch, offers, choice, max_price=None):
     import claude_agent
-    monkeypatch.setattr(claude_agent.config, "LETSFG_BACKEND", "rest")
     monkeypatch.setattr(claude_agent.config, "MAX_PRICE", max_price)
     monkeypatch.setattr(claude_agent.letsfg_rest, "search_flights",
                         lambda *a, **k: {"status": "ok", "search_id": "SRCH-9",

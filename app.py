@@ -2,9 +2,8 @@
 
 Flow:
   1. Employee runs `/traveldesk Delhi to Mumbai Tuesday morning`.
-  2. The AI provider (Claude with intelligent Haiku/Sonnet routing, or Groq
-     as optional fallback) searches LetsFG and picks a flight by
-     BOOKING_RULE / MAX_PRICE.
+  2. Claude (with Haiku/Sonnet routing) picks a flight from a LetsFG REST
+     search by BOOKING_RULE / MAX_PRICE.
   3. The chosen flight is posted back to the **requesting employee** in DM
      with Confirm / Cancel buttons (Slack Block Kit).
   4. Only the requesting employee can confirm their own request. Duplicate
@@ -177,7 +176,7 @@ def _call_agent_pick(agent, text, traveller, row_id):
     try:
         return agent.pick(text, traveller, booking_id=row_id)
     except TypeError:
-        # Groq / legacy providers: no booking_id kwarg.
+        # Agents without a booking_id kwarg (test doubles).
         return agent.pick(text, traveller)
 
 
@@ -406,7 +405,7 @@ def _request_passenger_details(client, row, trigger_id) -> bool:
     """Return True if booking must wait for passenger details (and ask for them)."""
     picked = json.loads(row["details"] or "{}")
     if picked.get("backend") != "rest":
-        return False  # MCP flow uses the traveller profile held by LetsFG
+        return False  # not a REST pick: letsfg_booking.book refuses it
     domestic = bool(picked.get("domestic"))
     profile = traveller_profile.load(row["slack_user"]) or {}
     res = _validate_for_trip(profile, picked)
