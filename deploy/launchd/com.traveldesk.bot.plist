@@ -3,16 +3,23 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.traveldesk.bot</string>
-  <!-- Change YOURUSER to your macOS username -->
+  <!-- If the project moves, update every /Users/rgl/Downloads/traveldesk-bot path below.
+       Install: cp deploy/launchd/com.traveldesk.bot.plist ~/Library/LaunchAgents/
+                launchctl load ~/Library/LaunchAgents/com.traveldesk.bot.plist -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOURUSER/traveldesk-bot/.venv/bin/python</string>
-    <string>/Users/YOURUSER/traveldesk-bot/app.py</string>
+    <string>/Users/rgl/Downloads/traveldesk-bot/.venv/bin/python</string>
+    <string>-m</string>
+    <string>traveldesk</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/YOURUSER/traveldesk-bot</string>
+  <key>WorkingDirectory</key><string>/Users/rgl/Downloads/traveldesk-bot</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key><string>/Users/rgl/Downloads/traveldesk-bot/src</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/Users/YOURUSER/traveldesk-bot/bot.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOURUSER/traveldesk-bot/bot.log</string>
+  <key>StandardOutPath</key><string>/Users/rgl/Downloads/traveldesk-bot/bot.log</string>
+  <key>StandardErrorPath</key><string>/Users/rgl/Downloads/traveldesk-bot/bot.log</string>
 </dict>
 </plist>
