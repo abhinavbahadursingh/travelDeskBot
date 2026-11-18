@@ -1,0 +1,6 @@
+.env
+travellers.json
+traveldesk.db
+bot.log
+.venv/
+__pycache__/

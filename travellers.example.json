@@ -1,0 +1,17 @@
+{
+  "_comment": "Map each Slack member ID (profile → ⋮ → Copy member ID) to the traveller's details exactly as on their government ID. Rename this file to travellers.json.",
+  "_fields": "given_name, family_name, email are required to search. date_of_birth (YYYY-MM-DD), gender (male/female), nationality and passport_country (2-letter ISO code, e.g. IN), passport_number and passport_expiry (YYYY-MM-DD) are required to book via the LetsFG REST API; passport_issue is optional. Leave them null: each traveller is asked for them privately in Slack and they are stored encrypted. Only fill them here from the traveller's real passport — never placeholder values. This file is kept owner-readable only (chmod 600).",
+  "U0123ABCDE": {
+    "given_name": "Abhinav",
+    "family_name": "Singh",
+    "email": "abhinav@example.com",
+    "phone": "+919800000000",
+    "date_of_birth": null,
+    "gender": null,
+    "nationality": null,
+    "passport_number": null,
+    "passport_country": null,
+    "passport_expiry": null,
+    "passport_issue": null
+  }
+}
