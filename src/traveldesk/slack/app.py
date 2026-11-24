@@ -42,6 +42,13 @@ log = logging.getLogger("traveldesk")
 # a stub token; real token errors still surface on the first API call.
 app = App(token=config.SLACK_BOT_TOKEN, token_verification_enabled=False)
 
+# Ops alert buttons ([Acknowledge] from the watchdog / digest, posted by traveldesk.ops.scheduler).
+from traveldesk.ops import group as _ops_group  # noqa: E402
+from traveldesk.ops import gst_report as _ops_gst  # noqa: E402
+from traveldesk.ops import slack_actions as _ops_slack_actions  # noqa: E402
+
+_ops_slack_actions.register(app)
+
 HELP = (
     "*How to use /traveldesk*\n"
     "`/traveldesk Delhi to Mumbai Tuesday morning`\n"
@@ -70,13 +77,20 @@ def traveldesk(ack, command, client):
 def on_message(event, client):
     """A message in the bot's DM is handled exactly like `/traveldesk <text>`.
 
+    A thread reply under a search that stopped at need_info / no_match is a
+    follow-up: the original request plus the reply is searched again.
     Everything else (channel messages, edits, deletions, the bot's own
-    posts, thread replies) is ignored quietly."""
+    posts, other thread replies) is ignored or gets a hint."""
     if event.get("channel_type") != "im":
         return
     if event.get("subtype") or event.get("bot_id") or not event.get("user"):
         return  # edits, deletions, joins, and messages posted by bots (incl. this one)
     if event.get("thread_ts") and event.get("thread_ts") != event.get("ts"):
+        reply = (event.get("text") or "").strip()
+        row = db.by_thread(event["user"], event["thread_ts"])
+        if reply and row and row["status"] in _FOLLOW_UP_STATUSES and _row_details(row).get("search_stopped"):
+            start_request(client, event["user"], f"{row['request']} — {reply}", event["channel"])
+            return
         client.chat_postMessage(
             channel=event["channel"],
             thread_ts=event["thread_ts"],
@@ -86,10 +100,34 @@ def on_message(event, client):
     start_request(client, event["user"], (event.get("text") or "").strip(), event["channel"])
 
 
+# Search outcomes a thread reply can answer. Only rows run_search stopped
+# (details.search_stopped) qualify — booking-phase need_info has its own flow.
+_FOLLOW_UP_STATUSES = ("need_info", "no_match")
+
+
 def start_request(client, user, text, dm):
     """Shared by /traveldesk and DMs: checks, then search on a background thread."""
     if text.lower().strip(" !.") in _HELP_WORDS:
         client.chat_postMessage(channel=dm, text=HELP)
+        return
+
+    # `gst [month]`: GST summary + dashboard link (travel admins only: company tax data).
+    first, _, rest = text.partition(" ")
+    if first.lower() == "gst":
+        if user not in config.TRAVEL_ADMINS:
+            client.chat_postMessage(channel=dm, text="The GST summary is for travel admins only.")
+            return
+        try:
+            reply = _ops_gst.for_slack(rest)
+        except Exception:  # noqa: BLE001 — answer the admin rather than fail silently
+            log.exception("gst summary failed")
+            reply = "Couldn't build the GST summary right now — check the bot's log."
+        client.chat_postMessage(channel=dm, text=reply)
+        return
+
+    # Several travellers (@mentions): the ops group flow (admins only; one Confirm for everyone).
+    if _ops_group.is_group_request(text, user):
+        _ops_group.start_from_bot(client, user, text, dm)
         return
 
     traveller = traveller_profile.load(user)
@@ -138,24 +176,33 @@ def say(client, channel, thread_ts, text):
 
 
 def run_search(client, channel, thread_ts, user, text, traveller):
-    row_id, _key = db.new_request(user, text, config.AI_PROVIDER)
+    row_id, _key = db.new_request(user, text, config.AI_PROVIDER, thread_ts=thread_ts)
     try:
         agent = agent_factory.get_agent()
         picked = _call_agent_pick(agent, text, traveller, row_id)
     except Exception as e:  # noqa: BLE001 — surfaced to user
         log.exception("pick failed for row %s", row_id)
+        if _stopped(row_id):
+            return
         db.update(row_id, status="failed", details={"error": str(e)})
         say(client, channel, thread_ts, f":x: Search failed: {e}")
+        return
+    if _stopped(row_id):
         return
 
     status = picked.get("status")
     if status != "picked":
-        db.update(row_id, status=status or "failed", details=picked)
+        db.update(row_id, status=status or "failed", details={**picked, "search_stopped": True})
+        hint = (
+            "\n_Reply in this thread to add or correct details and I'll search again._"
+            if status in _FOLLOW_UP_STATUSES
+            else ""
+        )
         say(
             client,
             channel,
             thread_ts,
-            f":warning: Not booked ({status}). {picked.get('message', '')}\n{picked.get('summary', '')}",
+            f":warning: Not booked ({status}). {picked.get('message', '')}\n{picked.get('summary', '')}{hint}",
         )
         return
 
@@ -194,6 +241,15 @@ def _call_agent_status(agent, booking_ref, row_id):
         return agent.booking_status(booking_ref, booking_id=row_id)
     except TypeError:
         return agent.booking_status(booking_ref)
+
+
+def _stopped(row_id) -> bool:
+    """True if the request was cancelled (e.g. from the web dashboard) while a
+    background step was running: the step must stop without messaging or booking."""
+    if db.is_cancelled(row_id):
+        log.info("row %s was cancelled; stopping its background work", row_id)
+        return True
+    return False
 
 
 def _post_confirmation_card(client, row_id, employee, request_text, picked, employee_dm, traveller):
@@ -237,18 +293,64 @@ def _passport_warning(picked, employee=None) -> str | None:
     return None
 
 
+_CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "AED": "AED "}
+
+# Search and booking are for one traveller (the requester).
+TICKETS_PER_BOOKING = 1
+
+
+def _money(amount, currency) -> str:
+    """58238.0, "INR" → "₹58,238"; 99.5, "USD" → "$99.50"."""
+    if amount is None:
+        return "price n/a"
+    try:
+        value = float(amount)
+    except (TypeError, ValueError):
+        return f"{amount} {currency}"
+    text = f"{value:,.0f}" if value == int(value) else f"{value:,.2f}"
+    symbol = _CURRENCY_SYMBOLS.get(str(currency).upper())
+    return f"{symbol}{text}" if symbol else f"{text} {currency}"
+
+
+def _fare_rule_blocks(picked) -> list:
+    """The fare's full rules (refund, change, no-show, bags, …) shown before Confirm."""
+    rows = picked.get("fare_conditions")
+    if not isinstance(rows, list) or not rows:
+        text = "*Fare rules*\nThe seller didn't send fare rules for this flight. Check them on the offer page before you confirm."
+    else:
+        lines = [f"• *{r.get('label')}:* {r.get('value')}" for r in rows if isinstance(r, dict)]
+        text = "*Fare rules*\n" + "\n".join(lines)
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}},
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "As given by the seller. The airline's full fare conditions apply.",
+                }
+            ],
+        },
+    ]
+
+
 def _confirm_blocks(row_id, employee, request_text, picked, traveller):
     price = picked.get("price")
     currency = picked.get("currency") or config.CURRENCY
-    price_line = f"{price} {currency}" if price is not None else "price n/a"
-    traveller_line = f"{traveller.get('given_name', '')} {traveller.get('family_name', '')}".strip()
+    tickets = TICKETS_PER_BOOKING
+    per_ticket = _money(price, currency)
+    total = _money(price * tickets if isinstance(price, (int, float)) else None, currency)
+    price_line = total  # used by the confirm dialog
+    traveller_line = (
+        f"{traveller_profile.full_given_name(traveller)} {traveller.get('family_name', '')}".strip()
+    )
     offer_link = picked.get("offer_link")
     value = json.dumps({"row": row_id})
     fields = [
-        {"type": "mrkdwn", "text": f"*Traveller*\n{traveller_line}"},
-        {"type": "mrkdwn", "text": f"*Price*\n{price_line}"},
-        {"type": "mrkdwn", "text": f"*Request*\n{request_text}"},
-        {"type": "mrkdwn", "text": f"*Model*\n`{picked.get('model') or picked.get('provider', '?')}`"},
+        {"type": "mrkdwn", "text": f"*Traveller*\n{traveller_line or '—'}"},
+        {"type": "mrkdwn", "text": f"*Tickets*\n{tickets}"},
+        {"type": "mrkdwn", "text": f"*Price per ticket*\n{per_ticket}"},
+        {"type": "mrkdwn", "text": f"*Total*\n*{total}*"},
     ]
     blocks = [
         {
@@ -257,26 +359,39 @@ def _confirm_blocks(row_id, employee, request_text, picked, traveller):
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{picked.get('summary', '(no summary)')}*"},
+            "text": {"type": "mrkdwn", "text": f":airplane: *{picked.get('summary', '(no summary)')}*"},
         },
         {"type": "section", "fields": fields},
     ]
-    if offer_link:
+    blocks += _fare_rule_blocks(picked)
+    asked = picked.get("passengers_requested")
+    if isinstance(asked, int) and asked > tickets:
         blocks.append(
             {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"<{offer_link}|View offer on LetsFG>"}],
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":warning: You asked for *{asked} tickets*, but I can only book *{tickets}* "
+                    f"(for {traveller_line or 'you'}). Each other traveller needs their own request "
+                    "from their own Slack account.",
+                },
             }
         )
+    footer = [f"Request: _{request_text}_"]
+    if offer_link:
+        footer.append(f"<{offer_link}|View offer on LetsFG>")
+    footer.append(f"Picked by `{picked.get('model') or picked.get('provider', '?')}`")
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(footer)}]})
     if picked.get("notice"):
         blocks.insert(1, {"type": "section", "text": {"type": "mrkdwn", "text": picked["notice"]}})
     warning = _passport_warning(picked, employee)
     if warning:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": warning}]})
+    ticket_word = "ticket" if tickets == 1 else "tickets"
     confirm_text = (
-        f"This will initiate a real booking for {price_line}."
+        f"This will book {tickets} {ticket_word} for {price_line} total. This is a real booking."
         if not config.DRY_RUN
-        else f"DRY_RUN is on. This will search and pick only, no real booking for {price_line}."
+        else f"DRY_RUN is on. This will search and pick only, no real booking ({tickets} {ticket_word}, {price_line})."
     )
     blocks.append(
         {
@@ -400,6 +515,7 @@ _MAX_LEN = {
     "passport_number": 20,
     "phone": 20,
     "given_name": 50,
+    "middle_name": 50,
     "family_name": 50,
     "address_line1": 100,
     "address_city": 50,
@@ -410,6 +526,7 @@ _MAX_LEN = {
 _DOMESTIC_ID_LINE = "Carry the ID you selected (or use DigiYatra) at the airport."
 _DOMESTIC_LABELS = {
     "given_name": "First name (exactly as on your ID)",
+    "middle_name": "Middle name(s), if on your ID",
     "family_name": "Last name (exactly as on your ID)",
 }
 
@@ -475,7 +592,8 @@ def _option(value, text):
     return {"text": {"type": "plain_text", "text": text}, "value": value}
 
 
-_GENDER_OPTIONS = [_option("m", "Male"), _option("f", "Female")]
+# F / M / X: the sex marker printed on the passport (ICAO Doc 9303).
+_GENDER_OPTIONS = [_option("m", "Male (M)"), _option("f", "Female (F)"), _option("x", "Unspecified (X)")]
 _ID_TYPE_OPTIONS = [_option(k, v) for k, v in traveller_profile.ID_TYPES.items()]
 
 
@@ -549,8 +667,13 @@ def _passenger_modal(
                     hint = f"On file: {traveller_profile.mask_passport(saved)}. Leave blank to keep it."
             elif saved:
                 element["initial_value"] = saved[: _MAX_LEN.get(f, 50)]
-        if f == "passport_issue":
+        if f in ("passport_issue", "middle_name"):
             optional = True  # optional unless LetsFG asked for it
+        if f == "middle_name":
+            hint = (
+                "Leave blank if your passport has none. It's sent with your given name, as airlines expect."
+            )
+
         if f in required:
             optional, hint = False, None
         label = (_DOMESTIC_LABELS.get(f) if domestic else None) or traveller_profile.LABELS.get(f, f)
@@ -724,6 +847,9 @@ def run_booking(client, row_id, employee, picked, traveller):
 def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *, retry=False):
     """Store and report a LetsFG book result. `retry` = this was the retry
     after the traveller supplied documents; a failure now goes to the admin."""
+    if _stopped(row_id):
+        _book_result_after_cancel(client, row_id, employee, picked, result)
+        return
     status = result.get("status", "failed")
     if status == "need_info" and ("missing_fields" in result or result.get("escalate")):
         _handle_need_info(client, row_id, employee, employee_dm, picked, result, retry=retry)
@@ -759,6 +885,9 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
         if result.get("approve_url")
         else result.get("payment_status", "unpaid"),
     )
+    if result.get("booking_ref") and status not in _NOTHING_BOOKED + ("picked",):
+        # LetsFG accepted: pending booking + pending debit now (a pay/approve page: no debit yet).
+        _track_in_ops(row_id, "awaiting_payment" if result.get("approve_url") else "pending", picked)
 
     price = f"{result.get('price', '')} {result.get('currency', '')}".strip()
     summary = result.get("summary", "") or picked.get("summary", "")
@@ -797,6 +926,47 @@ def _handle_book_result(client, row_id, employee, employee_dm, picked, result, *
 
     if result.get("booking_ref"):
         watch_booking(client, row_id, employee_dm, result["booking_ref"], domestic=domestic)
+
+
+_NOTHING_BOOKED = ("cancelled", "failed", "no_match", "need_info", "setup_required", "payment_blocked")
+
+
+def _book_result_after_cancel(client, row_id, employee, picked, result):
+    """The row was cancelled while LetsFG was being called. If LetsFG still
+    started a booking, keep its ref and tell the admin; nobody else is told."""
+    ref, status = result.get("booking_ref"), result.get("status")
+    if not ref or status in _NOTHING_BOOKED:
+        return
+    db.update(row_id, booking_ref=ref, details={**picked, **result})
+    _escalate(
+        client,
+        row_id,
+        employee,
+        picked,
+        f"Cancelled from the dashboard while LetsFG was booking it (LetsFG booking {ref}, `{status}`). "
+        "Check it with LetsFG and cancel it there if needed.",
+    )
+
+
+def _track_in_ops(row_id, state: str, pick: dict | None = None, reason: str = "") -> None:
+    """Keep the ops ledger in step before the ticket (pending / awaiting_payment / failed / cancelled).
+    Never blocks the booking flow."""
+    try:
+        from traveldesk.ops import legacy as ops_legacy
+
+        ops_legacy.track_legacy_id(row_id, state, pick=pick, reason=reason)
+    except Exception:  # noqa: BLE001 — ops bookkeeping must not break the booking
+        log.exception("ops tracking (%s) failed for booking %s", state, row_id)
+
+
+def _mirror_to_ops(row_id, pick: dict) -> None:
+    """Record the ticket in the ops ledger tables. Never blocks the ticket message."""
+    try:
+        from traveldesk.ops import legacy as ops_legacy
+
+        ops_legacy.mirror_legacy_id(row_id, pick=pick)
+    except Exception:  # noqa: BLE001 — ops bookkeeping must not break ticket delivery
+        log.exception("ops mirror failed for booking %s", row_id)
 
 
 def _notify(client, employee_dm, text):
@@ -856,6 +1026,7 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
                 charged_amount=charged,
                 details=st,
             )
+            _mirror_to_ops(row_id, _row_details(before))
             text = (
                 f":ticket: *Ticket issued!* PNR: *{st.get('pnr')}*\nTotal: {charged} {st.get('currency', '')}"
             )
@@ -872,6 +1043,8 @@ def watch_booking(client, row_id, employee_dm, booking_ref, domestic=False):
             db.update(
                 row_id, status=state, payment_status="failed" if state == "failed" else "unpaid", details=st
             )
+            if state != "needs_attention":  # needs_attention may still be charged: leave the debit pending
+                _track_in_ops(row_id, "cancelled" if state == "cancelled" else "failed", reason=state)
             _notify(client, employee_dm, f":warning: Booking {state}. {st.get('message', '')}")
             return
     db.update(row_id, status="timeout")
@@ -963,6 +1136,8 @@ def _search_again_blocks(text, row_id):
 
 def _start_payment_link(client, row_id, employee, employee_dm, picked, result):
     """Record the pay link, send "Pay now" to the approver(s), then follow it."""
+    if _stopped(row_id):
+        return
     pay_url, new_ref = result.get("pay_url"), result.get("booking_ref")
     summary = picked.get("summary", "")
     if not pay_url or not new_ref:
@@ -995,6 +1170,7 @@ def _start_payment_link(client, row_id, employee, employee_dm, picked, result):
         pay_approvers=",".join(approvers),
         details={**picked, **keep},
     )
+    _track_in_ops(row_id, "awaiting_payment", picked)
     log.warning(
         "payment needs approval row=%s booking=%s declined=%s kind=%s reason=%s expires=%s (%s) message=%s",
         row_id,
@@ -1042,7 +1218,10 @@ def watch_payment(client, row_id):
     employee_dm = _open_dm(client, employee)
     while True:
         row = db.get(row_id) or {}
-        if row.get("status") != "awaiting_payment":
+        # Cancelled from the dashboard: the link can't be withdrawn at LetsFG, so
+        # keep an eye on it until it expires in case someone pays it anyway.
+        cancelled = row.get("status") == "cancelled" and bool(row.get("pay_url"))
+        if row.get("status") != "awaiting_payment" and not cancelled:
             return
         details = _row_details(row)
         now = _utcnow()
@@ -1051,11 +1230,13 @@ def watch_payment(client, row_id):
             minutes=config.PAY_LINK_TIMEOUT_MINUTES
         )
         if now >= expires:
+            if cancelled:
+                return
             _close_payment(
                 client, row, employee_dm, "expired", "The payment link expired before it was paid."
             )
             return
-        if not row.get("pay_reminded_at") and now >= started + (expires - started) / 2:
+        if not cancelled and not row.get("pay_reminded_at") and now >= started + (expires - started) / 2:
             db.update(row_id, pay_reminded_at=now.isoformat())
             text = (
                 f":bell: *Reminder:* payment for request #{row_id} (<@{employee}>) is still waiting.\n"
@@ -1074,6 +1255,9 @@ def watch_payment(client, row_id):
         if st.get("transient") or state == "awaiting_payment":
             continue
         log.info("pay-link booking %s → %s", row["booking_ref"], state)
+        if cancelled or db.is_cancelled(row_id):
+            _cancelled_pay_link_closed(client, db.get(row_id) or row, st)
+            return
         if state in ("failed", "payment_link", "approval_expired", "expired", "not_started", "cancelled"):
             reason = st.get("message") or st.get("failure_reason") or "LetsFG closed the payment link."
             expired = state in ("approval_expired", "expired") or "expir" in reason.lower()
@@ -1090,6 +1274,7 @@ def watch_payment(client, row_id):
             return
         # Paid: the booking is under way (or already done).
         db.update(row_id, status="booking_in_progress", payment_status="held")
+        _track_in_ops(row_id, "pending", details)  # charged now: pending debit
         paid = (
             f":white_check_mark: Payment received for *{details.get('summary', '')}*. "
             "LetsFG is booking it now (usually 4-11 minutes)."
@@ -1102,11 +1287,31 @@ def watch_payment(client, row_id):
         return
 
 
+def _cancelled_pay_link_closed(client, row, st):
+    """A cancelled request's pay link left awaiting_payment. Closed: nothing to
+    do. Paid: LetsFG is booking a cancelled trip, so the admin must act."""
+    state = st.get("status")
+    if state in ("failed", "payment_link", "approval_expired", "expired", "not_started", "cancelled"):
+        return
+    row_id, employee = row["id"], row.get("slack_user")
+    details = _row_details(row)
+    db.update(row_id, payment_status="held", details={**details, "paid_after_cancel": st})
+    reason = (
+        f"Cancelled from the dashboard, but its payment link was paid afterwards; LetsFG reports "
+        f"`{state}` for booking {row.get('booking_ref')}. Cancel or refund it with LetsFG."
+    )
+    _escalate(client, row_id, employee, details, reason)
+    for user in _approvers(row):
+        if user not in config.TRAVEL_ADMINS:
+            _dm(client, user, f":rotating_light: Request #{row_id} (<@{employee}>): {reason}")
+
+
 def _close_payment(client, row, employee_dm, status, reason):
     """LetsFG closed the link or it expired: say so and offer a new search."""
     row_id = row["id"]
     details = _row_details(row)
     db.update(row_id, status=status, payment_status="unpaid")
+    _track_in_ops(row_id, "failed", reason=f"pay link {status}")  # nothing was charged: no debit
     log.warning(
         "pay link closed row=%s booking=%s → %s: %s",
         row_id,
@@ -1575,6 +1780,8 @@ def _new_confirmation(client, old_row, employee, employee_dm, picked):
 
 def reprice_and_reconfirm(client, row_id, employee, employee_dm, picked, result):
     search = _search_same_route(picked)
+    if _stopped(row_id):
+        return
     if search.get("status") != "ok":
         _notify(
             client,
@@ -1744,6 +1951,8 @@ def _in_window(offer, center: str | None) -> bool:
 
 
 def find_alternatives(client, row_id, employee):
+    if _stopped(row_id):
+        return
     row = db.get(row_id)
     picked = _row_details(row)
     try:
@@ -1768,6 +1977,8 @@ def find_alternatives(client, row_id, employee):
         )
         return
     search = _search_same_route(picked)
+    if _stopped(row_id):
+        return
     if search.get("status") != "ok":
         _notify(
             client,
@@ -1934,6 +2145,143 @@ def _resume_unfinished_bookings(client):
         log.info("resumed %d in-flight booking(s) after restart", resumed)
 
 
+# --- cancelled from the web dashboard -------------------------------------------
+
+_WEB_SWEEP_SECONDS = 5
+
+
+def notify_dashboard_cancellations(client) -> int:
+    """Tell travellers (and pay-link approvers) about requests cancelled from the
+    web UI (dashboard Cancel, or /book "Change flight"). The background steps stop by themselves (see `_stopped`)."""
+    rows = db.dashboard_cancellations()
+    for row in rows:
+        try:
+            _tell_dashboard_cancel(client, row)
+        except Exception:  # noqa: BLE001 — one row's Slack failure must not block the others
+            log.exception("could not report dashboard cancel for row %s", row["id"])
+        db.mark_cancel_notified(row["id"])
+    return len(rows)
+
+
+def _tell_dashboard_cancel(client, row):
+    """One short message to the traveller (in the request's thread), the card's
+    buttons removed, and pay-link approvers told not to pay."""
+    row_id, employee = row["id"], row.get("slack_user")
+    details = _row_details(row)
+    what = details.get("summary") or row.get("request") or f"request #{row_id}"
+    pay_link = bool(row.get("pay_url")) and row.get("payment_status") == "awaiting_payment"
+    changed = row.get("approver") == db.WEB_CHANGE
+    log.info("row %s cancelled from the web (%s); telling %s", row_id, row.get("approver"), employee)
+
+    if changed:
+        text = (
+            f":arrows_counterclockwise: Flight changed on the web page, so #{row_id} *{what}* was cancelled."
+        )
+        card_note = ":arrows_counterclockwise: Replaced: flight changed on the web page"
+    else:
+        text = f":no_entry: #{row_id} *{what}* was cancelled from the travel desk dashboard."
+        card_note = ":no_entry: Cancelled from the travel desk dashboard"
+    if pay_link:
+        text += " Don't use its payment link."
+    elif not row.get("booking_ref"):
+        text += " Nothing was booked or charged."
+
+    # The confirmation card loses its buttons, so nobody can confirm a cancelled trip.
+    channel, card = row.get("manager_channel"), row.get("manager_message_ts")
+    if channel and card:
+        done = f"{details.get('summary', '')}\n{card_note}"
+        try:
+            client.chat_update(
+                channel=channel,
+                ts=card,
+                text=done,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": done}}],
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not update card for row %s: %s", row_id, type(e).__name__)
+
+    _thread_note(client, row, text)
+
+    if pay_link:
+        db.update(row_id, payment_status="unpaid")
+        for user in _approvers(row):
+            if user != employee:
+                _dm(
+                    client,
+                    user,
+                    f":no_entry: #{row_id} (<@{employee}>) was cancelled. Don't pay its payment link.",
+                )
+
+
+def _thread_note(client, row, text):
+    """A short line to the traveller in the request's thread (plain DM as fallback)."""
+    employee, thread = row.get("slack_user"), row.get("slack_thread_ts")
+    dm = _open_dm(client, employee)
+    if dm:
+        try:
+            client.chat_postMessage(channel=dm, text=text, **({"thread_ts": thread} if thread else {}))
+            return
+        except Exception as e:  # noqa: BLE001 — fall back to a plain DM
+            log.warning("thread reply failed for row %s: %s", row["id"], type(e).__name__)
+    _dm(client, employee, text)
+
+
+# --- confirmed on the /book page ----------------------------------------------------------
+
+
+def start_web_confirmed(client) -> int:
+    """Book requests the traveller confirmed on the web page, exactly as a Slack
+    Confirm click does (the web checked their passenger details first)."""
+    started = 0
+    for row in db.web_confirmed():
+        if not db.claim_status(row["id"], (db.WEB_CONFIRMED,), "confirmed"):
+            continue  # cancelled meanwhile, or another sweep got it
+        try:
+            _book_web_confirmed(client, db.get(row["id"]))
+            started += 1
+        except Exception:  # noqa: BLE001 — one row must not block the others
+            log.exception("could not start web-confirmed booking for row %s", row["id"])
+    return started
+
+
+def _book_web_confirmed(client, row):
+    row_id, employee = row["id"], row["slack_user"]
+    picked = _row_details(row)
+    traveller = traveller_profile.load(employee) or {}
+    log.info("row %s confirmed on the web page by %s; booking", row_id, employee)
+    channel, card = row.get("manager_channel"), row.get("manager_message_ts")
+    if channel and card:
+        # It was sent to Slack first: clear the card's buttons and say where it was confirmed.
+        # (Confirmed straight from the page, its own Slack note already says so.)
+        note = f":lock: Confirmed on the web page by <@{employee}>"
+        blocks = [
+            b
+            for b in _confirm_blocks(
+                row_id, employee, row["request"], picked, traveller_profile.public_view(traveller)
+            )
+            if b.get("type") != "actions"
+        ]
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": note}]})
+        try:
+            client.chat_update(channel=channel, ts=card, text=f"Booking {note}", blocks=blocks)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not update card for row %s: %s", row_id, type(e).__name__)
+        _thread_note(client, row, f":white_check_mark: #{row_id} confirmed on the web page. Booking it now.")
+    threading.Thread(
+        target=run_booking, args=(client, row_id, employee, picked, traveller), daemon=True
+    ).start()
+
+
+def _web_actions_watcher(client, stop: threading.Event, interval: float) -> None:
+    """Acts on what the web UI wrote: confirmations (book) and cancellations (tell)."""
+    while not stop.wait(interval):
+        for step in (start_web_confirmed, notify_dashboard_cancellations):
+            try:
+                step(client)
+            except Exception:  # noqa: BLE001 — keep watching
+                log.exception("web action check failed: %s", step.__name__)
+
+
 def _heartbeat(stop: threading.Event, interval: float, started: float) -> None:
     """Log one line every `interval` seconds so a stalled process shows up in bot.log."""
     while not stop.wait(interval):
@@ -1953,6 +2301,14 @@ def main() -> None:
     if not secure_store.is_configured():
         log.warning("TRAVELDESK_DATA_KEY not set: passport details cannot be collected or stored")
     _resume_unfinished_bookings(app.client)
+    start_web_confirmed(app.client)
+    notify_dashboard_cancellations(app.client)
+    threading.Thread(
+        target=_web_actions_watcher,
+        args=(app.client, threading.Event(), _WEB_SWEEP_SECONDS),
+        daemon=True,
+        name="web-actions",
+    ).start()
     if config.HEARTBEAT_SECONDS > 0:
         threading.Thread(
             target=_heartbeat,

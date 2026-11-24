@@ -252,7 +252,16 @@ def test_domestic_modal_shows_basic_fields_and_id_type_only(user, threads):
     uid = user("UDOM1", {"given_name": "Raj", "family_name": "Gupta", "email": "raj@example.com"})
     row_id = _row(uid, domestic=True)
     view, inputs = _inputs(_confirm(uid, row_id))
-    assert list(inputs) == ["given_name", "family_name", "date_of_birth", "gender", "phone", "id_type"]
+    assert list(inputs) == [
+        "given_name",
+        "middle_name",
+        "family_name",
+        "date_of_birth",
+        "gender",
+        "phone",
+        "id_type",
+    ]
+    assert inputs["middle_name"]["optional"] is True
     assert not any("passport" in f or "nationality" in f for f in inputs)
     assert inputs["given_name"]["element"]["initial_value"] == "Raj"
     assert inputs["id_type"]["optional"] is True
@@ -265,7 +274,8 @@ def test_domestic_modal_shows_basic_fields_and_id_type_only(user, threads):
     ]
     # No ID-number input of any kind.
     assert all(
-        b["element"]["type"] != "plain_text_input" or f in ("given_name", "family_name", "phone")
+        b["element"]["type"] != "plain_text_input"
+        or f in ("given_name", "middle_name", "family_name", "phone")
         for f, b in inputs.items()
     )
     intro = view["blocks"][0]["elements"][0]["text"]
@@ -289,7 +299,7 @@ def test_international_with_passport_expiring_too_soon_shows_passport_fields_pre
     uid = user("UINT1", BASIC, secure={**PASSPORT, "passport_expiry": "2027-03-01"})
     row_id = _row(uid, domestic=False, last="2027-01-11")
     view, inputs = _inputs(_confirm(uid, row_id))
-    assert list(inputs) == list(tp.PASSPORT_FIELDS)
+    assert list(inputs) == ["middle_name", *tp.PASSPORT_FIELDS]
     assert inputs["nationality"]["element"]["initial_value"] == "IN"
     assert inputs["passport_expiry"]["element"]["initial_date"] == "2027-03-01"
     assert "6 months" in inputs["passport_expiry"]["hint"]["text"]

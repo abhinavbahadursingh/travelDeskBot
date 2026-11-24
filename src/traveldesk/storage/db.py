@@ -51,7 +51,20 @@ _COLUMNS = [
     ("pay_expires_at", "TEXT"),  # ISO UTC: LetsFG valid_until, else the fallback timeout
     ("pay_reminded_at", "TEXT"),  # ISO UTC of the one reminder
     ("pay_approvers", "TEXT"),  # comma-separated Slack IDs the link went to
+    ("slack_thread_ts", "TEXT"),  # ts of the "Searching flights…" message; replies there are follow-ups
+    # Cancelled from the web dashboard (approver='dashboard'): when the bot told the traveller.
+    ("cancel_notified_at", "TEXT"),
+    # 'web' when the traveller confirmed on the web page; empty for a Slack Confirm click.
+    ("confirmed_via", "TEXT"),
 ]
+
+# `approver` values the web UI writes when it cancels a request:
+DASHBOARD = "dashboard"  # Cancel on the bookings dashboard
+WEB_CHANGE = "web_change"  # "Change flight" on the /book page (the request is replaced)
+WEB_CANCELLERS = (DASHBOARD, WEB_CHANGE)
+# Status the /book page writes when the traveller confirms there; the Slack bot
+# picks it up, moves it to 'confirmed' and books it like a Slack Confirm click.
+WEB_CONFIRMED = "web_confirmed"
 
 _AI_USAGE_COLUMNS = [
     ("id", "INTEGER PRIMARY KEY AUTOINCREMENT"),
@@ -97,24 +110,86 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def new_request(slack_user: str, request: str, provider: str) -> tuple[int, str]:
+def new_request(
+    slack_user: str, request: str, provider: str, thread_ts: str | None = None
+) -> tuple[int, str]:
     """Create a new row and return (row_id, request_key)."""
     key = secrets.token_urlsafe(10)
     with _lock, _conn() as c:
         cur = c.execute(
-            "INSERT INTO bookings (created_at, slack_user, request, status, request_key, provider, payment_status)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (_now(), slack_user, request, "searching", key, provider, "unpaid"),
+            "INSERT INTO bookings (created_at, slack_user, request, status, request_key, provider,"
+            " payment_status, slack_thread_ts) VALUES (?,?,?,?,?,?,?,?)",
+            (_now(), slack_user, request, "searching", key, provider, "unpaid", thread_ts),
         )
         return cur.lastrowid, key
 
 
+def by_thread(slack_user: str, thread_ts: str) -> dict | None:
+    """The user's request whose Slack thread starts at `thread_ts`, if any."""
+    with _lock, _conn() as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT * FROM bookings WHERE slack_user=? AND slack_thread_ts=? ORDER BY id DESC LIMIT 1",
+            (slack_user, thread_ts),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def update(row_id: int, **fields) -> None:
+    """Write fields to a row. A 'cancelled' status is final: a later status
+    write is ignored (the other fields are still recorded), so a background
+    step that finishes after a cancel can't bring the request back to life."""
     if "details" in fields and not isinstance(fields["details"], str):
         fields["details"] = json.dumps(fields["details"], ensure_ascii=False)
-    cols = ", ".join(f"{k}=?" for k in fields)
+    cols = ", ".join(
+        "status=CASE WHEN status='cancelled' THEN status ELSE ? END" if k == "status" else f"{k}=?"
+        for k in fields
+    )
     with _lock, _conn() as c:
         c.execute(f"UPDATE bookings SET {cols} WHERE id=?", (*fields.values(), row_id))
+
+
+def is_cancelled(row_id: int) -> bool:
+    """True once the row is cancelled (Slack Cancel button or the web dashboard)."""
+    with _lock, _conn() as c:
+        row = c.execute("SELECT status FROM bookings WHERE id=?", (row_id,)).fetchone()
+        return bool(row) and row[0] == "cancelled"
+
+
+def dashboard_cancellations() -> list[dict]:
+    """Rows cancelled from the web UI whose traveller hasn't been told yet."""
+    marks = ",".join("?" for _ in WEB_CANCELLERS)
+    with _lock, _conn() as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            f"SELECT * FROM bookings WHERE status='cancelled' AND approver IN ({marks}) "
+            "AND cancel_notified_at IS NULL ORDER BY id",
+            WEB_CANCELLERS,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def confirm_from_web(row_id: int, slack_user: str) -> bool:
+    """awaiting_confirm → web_confirmed, only for the requester. True if this call did it."""
+    with _lock, _conn() as c:
+        cur = c.execute(
+            "UPDATE bookings SET status=?, approver=?, approval_ts=?, confirmed_via='web' "
+            "WHERE id=? AND slack_user=? AND status='awaiting_confirm'",
+            (WEB_CONFIRMED, slack_user, _now(), row_id, slack_user),
+        )
+        return cur.rowcount == 1
+
+
+def web_confirmed() -> list[dict]:
+    """Rows confirmed on the /book page that the Slack bot hasn't started booking."""
+    with _lock, _conn() as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute("SELECT * FROM bookings WHERE status=? ORDER BY id", (WEB_CONFIRMED,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_cancel_notified(row_id: int) -> None:
+    update(row_id, cancel_notified_at=_now())
 
 
 def get(row_id: int) -> dict | None:

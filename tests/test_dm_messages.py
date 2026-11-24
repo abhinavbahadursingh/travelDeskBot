@@ -101,6 +101,38 @@ def test_thread_reply_gets_hint_not_search(threads, client):
     assert "new message" in _texts(client)[0]
 
 
+def _stopped_search(user, thread_ts, status="need_info", **details):
+    from traveldesk.storage import db
+
+    rid, _ = db.new_request(user, "2 tickets delhi to baku next sunday", "claude", thread_ts=thread_ts)
+    db.update(rid, status=status, details={"status": status, **details})
+    return rid
+
+
+def test_thread_reply_to_stopped_search_searches_again(monkeypatch, threads, client):
+    monkeypatch.setitem(tp.config.TRAVELLERS, "UFOLLOW1", dict(PROFILE))
+    _stopped_search("UFOLLOW1", "7.1", search_stopped=True)
+    bot_app.on_message(_dm("yes, Baku is right", user="UFOLLOW1", thread_ts="7.1"), client)
+    target, args = threads[0]
+    assert target is bot_app.run_search
+    assert args[4] == "2 tickets delhi to baku next sunday — yes, Baku is right"
+
+
+def test_thread_reply_after_booking_phase_need_info_gets_hint(monkeypatch, threads, client):
+    monkeypatch.setitem(tp.config.TRAVELLERS, "UFOLLOW2", dict(PROFILE))
+    _stopped_search("UFOLLOW2", "7.2")  # need_info from booking, not from the search
+    bot_app.on_message(_dm("yes", user="UFOLLOW2", thread_ts="7.2"), client)
+    assert threads == []
+    assert "new message" in _texts(client)[0]
+
+
+def test_thread_reply_from_someone_else_gets_hint(monkeypatch, threads, client):
+    _stopped_search("UFOLLOW3", "7.3", search_stopped=True)
+    bot_app.on_message(_dm("yes", user="UOTHER", thread_ts="7.3"), client)
+    assert threads == []
+    assert "new message" in _texts(client)[0]
+
+
 def test_heartbeat_logs_until_stopped(caplog):
     import logging
     import threading
@@ -115,3 +147,51 @@ def test_heartbeat_logs_until_stopped(caplog):
         t.join(1)
     assert not t.is_alive()
     assert any("heartbeat: alive" in r.getMessage() for r in caplog.records)
+
+
+def _card_text(blocks):
+    out = []
+    for b in blocks:
+        if b.get("text"):
+            out.append(b["text"]["text"])
+        out += [f["text"] for f in b.get("fields", [])]
+        out += [e["text"] for e in b.get("elements", []) if e.get("type") == "mrkdwn"]
+        out += [e["confirm"]["text"]["text"] for e in b.get("elements", []) if e.get("confirm")]
+    return "\n".join(out)
+
+
+def _card(**picked):
+    base = {
+        "summary": "Air India · 29 Nov 04:15 DEL → 07:50 GYD · nonstop",
+        "price": 58238.0,
+        "currency": "INR",
+    }
+    return _card_text(bot_app._confirm_blocks(1, "U", "2 tickets delhi to baku", {**base, **picked}, PROFILE))
+
+
+def test_card_shows_tickets_per_ticket_price_and_total(monkeypatch):
+    monkeypatch.setattr(bot_app.config, "DRY_RUN", False)
+    text = _card(passengers_requested=1)
+    assert "*Tickets*\n1" in text
+    assert "*Price per ticket*\n₹58,238" in text
+    assert "*Total*\n*₹58,238*" in text
+    assert "book 1 ticket for ₹58,238 total" in text
+    assert "You asked for" not in text
+
+
+def test_card_warns_when_more_tickets_were_asked_for():
+    text = _card(passengers_requested=2)
+    assert "You asked for *2 tickets*, but I can only book *1*" in text
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "shown"),
+    [
+        (58238.0, "INR", "₹58,238"),
+        (99.5, "USD", "$99.50"),
+        (1200, "AZN", "1,200 AZN"),
+        (None, "INR", "price n/a"),
+    ],
+)
+def test_money(amount, currency, shown):
+    assert bot_app._money(amount, currency) == shown

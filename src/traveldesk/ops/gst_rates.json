@@ -1,0 +1,15 @@
+{
+  "_comment": "GST rates (%) by category, versioned by effective_from (YYYY-MM-DD). The version in force on the booking date is used. Add a new version for a rate change; never edit an old one. itc_eligible=false means 'confirm with your CA' before claiming input tax credit.",
+  "versions": [
+    {
+      "effective_from": "2025-09-22",
+      "rates": {
+        "flight_economy": {"rate": "5", "itc_eligible": false},
+        "flight_premium": {"rate": "18", "itc_eligible": false},
+        "hotel_upto_7500_per_night": {"rate": "5", "itc_eligible": false},
+        "hotel_above_7500": {"rate": "18", "itc_eligible": false},
+        "service_fee": {"rate": "18", "itc_eligible": false}
+      }
+    }
+  ]
+}

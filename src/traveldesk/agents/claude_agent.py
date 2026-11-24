@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from datetime import date
 
 import anthropic
@@ -204,43 +205,173 @@ def _offer_price(offer: dict) -> float | None:
     return None
 
 
+_OFFERS_JSON_LIMIT = 60000
+
+
+def _offers_json(offers: list[dict], limit: int = _OFFERS_JSON_LIMIT) -> tuple[str, int]:
+    """Cheapest offers first, as a JSON array of whole offers within `limit` chars.
+
+    Cutting the dumped string instead leaves the model a broken last offer and
+    no closing bracket — enough for it to misread the routes. Returns the JSON
+    and how many offers it holds."""
+    ranked = sorted(offers, key=lambda o: (_offer_price(o) is None, _offer_price(o) or 0.0))
+    parts: list[str] = []
+    size = 2  # the brackets
+    for o in ranked:
+        part = json.dumps(o, ensure_ascii=False, default=str)
+        if parts and size + len(part) + 2 > limit:
+            break
+        parts.append(part)
+        size += len(part) + 2
+    return "[" + ", ".join(parts) + "]", len(parts)
+
+
+def _extract_route(request: str, model: str, booking_id: int | None, wrong: list | None = None) -> dict:
+    """The model's route: origin/destination codes and the cities they are in, dates."""
+    correction = ""
+    if wrong:
+        lines = "\n".join(f"- {w['code']} is in {w['letsfg_city']}, not {w['model_city']}." for w in wrong)
+        correction = f"\nAn earlier answer used the wrong airport code:\n{lines}\nUse the correct code.\n"
+    system = f"""{_COMMON}
+
+Today is {date.today().isoformat()}.
+Extract the flight search from the request.
+International trips are fully supported. A city with no country named is in
+India; a city or country outside India that the request names (e.g. Baku,
+Azerbaijan; Dubai) is a valid destination — never refuse or question a trip
+for being international.
+Airport codes: if a city has no commercial airport of its own, use the nearest
+major commercial airport in the same country — e.g. Ghaziabad, Noida, Gurugram,
+Faridabad → DEL; Thane → BOM; Navi Mumbai has its own airport NMI. Never swap a
+city for an airport in a different country.
+Return need_info only when the origin, destination or date can't be worked out,
+and say which one is missing.{correction}
+Final JSON keys:
+origin, destination: IATA airport codes,
+origin_city, destination_city: English name of the city each of those airports
+is in (e.g. DEL → "New Delhi", GYD → "Baku"),
+date_from: YYYY-MM-DD departure date, return_from: YYYY-MM-DD or null,
+passengers: how many travellers or tickets the request asks for (1 if not said),
+status: "ok" or "need_info", message: short reason if need_info"""
+    ex = _plain_json(model, system, request, task_kind="extract", booking_id=booking_id)
+    return {
+        **ex,
+        "origin": str(ex.get("origin") or "").upper(),
+        "destination": str(ex.get("destination") or "").upper(),
+        "date_from": str(ex.get("date_from") or ""),
+        "return_from": ex.get("return_from") or None,
+        "passengers": _passengers(ex.get("passengers")),
+    }
+
+
+def _passengers(value) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return n if 1 <= n <= 9 else 1
+
+
+def _route_error(ex: dict) -> dict | None:
+    ret = ex["return_from"]
+    if ex.get("status") == "need_info" or not (
+        _IATA.match(ex["origin"])
+        and _IATA.match(ex["destination"])
+        and _DATE.match(ex["date_from"])
+        and (ret is None or _DATE.match(str(ret)))
+    ):
+        return {
+            "status": "need_info",
+            "message": ex.get("message") or "Couldn't work out origin, destination and date.",
+            "extracted": {k: ex.get(k) for k in ("origin", "destination", "date_from", "return_from")},
+        }
+    return None
+
+
+def _search(ex: dict) -> dict:
+    return letsfg_rest.search_flights(
+        ex["origin"], ex["destination"], ex["date_from"], return_from=ex["return_from"]
+    )
+
+
+def _city_key(name) -> str:
+    """'Şanlıurfa' → 'sanliurfa'; letters only, for loose city-name matching."""
+    text = unicodedata.normalize("NFKD", str(name or "").replace("ı", "i"))
+    return "".join(c for c in text.lower() if c.isalpha())
+
+
+def _wrong_airports(ex: dict, search: dict) -> list[dict]:
+    """Codes whose city in LetsFG's results is not the city the model meant.
+
+    Checked only where both sides name a city; an empty city never counts as
+    a mismatch. Matching is loose ("Delhi" fits "New Delhi")."""
+    if search.get("status") != "ok":
+        return []
+    seen: dict[str, set] = {}
+    for o in search.get("offers") or []:
+        if not isinstance(o, dict):
+            continue
+        for seg in flight_scope.segments(o):
+            for side in ("origin", "destination"):
+                code = str(seg.get(side) or "").upper()
+                city = str(seg.get(f"{side}_city") or "").strip()
+                if code and city:
+                    seen.setdefault(code, set()).add(city)
+    wrong = []
+    for side in ("origin", "destination"):
+        code, meant = ex[side], str(ex.get(f"{side}_city") or "").strip()
+        cities = seen.get(code)
+        if not meant or not cities:
+            continue
+        m = _city_key(meant)
+        if not any(m in _city_key(c) or _city_key(c) in m for c in cities if _city_key(c)):
+            wrong.append({"side": side, "code": code, "model_city": meant, "letsfg_city": sorted(cities)[0]})
+    return wrong
+
+
+def _mismatch_message(wrong: list[dict]) -> str:
+    parts = [f"{w['code']} is {w['letsfg_city']}, not {w['model_city']}" for w in wrong]
+    return (
+        f"I couldn't find the right airport code ({'; '.join(parts)}). "
+        "Reply with the airport codes, e.g. `DEL to GYD 29 Nov`."
+    )
+
+
 def _pick_rest(request: str, traveller: dict, booking_id: int | None) -> dict:
     """REST backend: Haiku extracts the route, Python searches, Sonnet chooses,
     Python validates the choice. IDs come from the REST search so they can be
     booked via REST /flights/book."""
     base = {"provider": _PROVIDER, "backend": "rest"}
-    extract_system = f"""{_COMMON}
+    ex = _extract_route(request, config.CLAUDE_HAIKU_MODEL, booking_id)
+    route_err = _route_error(ex)
+    if route_err:
+        return {**base, **route_err}
+    search = _search(ex)
+    wrong = _wrong_airports(ex, search)
+    if wrong:
+        # The model's code is an airport somewhere else (seen: Baku → GNY,
+        # Şanlıurfa). Ask Sonnet once, saying which code was wrong.
+        log.warning("extract: airport code mismatch %s; retrying with Sonnet", wrong)
+        ex = _extract_route(request, config.CLAUDE_SONNET_MODEL, booking_id, wrong=wrong)
+        route_err = _route_error(ex)
+        if route_err:
+            return {**base, **route_err}
+        search = _search(ex)
+        wrong = _wrong_airports(ex, search)
+    origin, dest, dep, ret = ex["origin"], ex["destination"], ex["date_from"], ex["return_from"]
+    # Every outcome from here on records what was searched.
+    base = {
+        **base,
+        "origin": origin,
+        "destination": dest,
+        "depart_date": dep,
+        "return_from": ret,
+        # Asked for, not booked: search and booking are for one traveller.
+        "passengers_requested": ex["passengers"],
+    }
+    if wrong:
+        return {**base, "status": "need_info", "message": _mismatch_message(wrong)}
 
-Today is {date.today().isoformat()}. Domestic India unless stated.
-Extract the flight search from the request.
-Airport codes: if a city has no commercial airport of its own, use the nearest
-major commercial airport in the same country — e.g. Ghaziabad, Noida, Gurugram,
-Faridabad → DEL; Thane → BOM; Navi Mumbai has its own airport NMI. Never use an
-airport in another country for a domestic request. If unsure, return need_info.
-Final JSON keys:
-origin, destination: IATA codes,
-date_from: YYYY-MM-DD departure date, return_from: YYYY-MM-DD or null,
-status: "ok" or "need_info", message: short reason if need_info"""
-    ex = _plain_json(
-        config.CLAUDE_HAIKU_MODEL, extract_system, request, task_kind="extract", booking_id=booking_id
-    )
-    origin = str(ex.get("origin") or "").upper()
-    dest = str(ex.get("destination") or "").upper()
-    dep = str(ex.get("date_from") or "")
-    ret = ex.get("return_from") or None
-    if ex.get("status") == "need_info" or not (
-        _IATA.match(origin)
-        and _IATA.match(dest)
-        and _DATE.match(dep)
-        and (ret is None or _DATE.match(str(ret)))
-    ):
-        return {
-            **base,
-            "status": "need_info",
-            "message": ex.get("message") or "Couldn't work out origin, destination and date.",
-        }
-
-    search = letsfg_rest.search_flights(origin, dest, dep, return_from=ret)
     if search["status"] != "ok":
         return {**base, **search}
     route = f"{origin} → {dest} on {dep}"
@@ -275,9 +406,9 @@ status: "picked" or "no_match"
 offer_id: the chosen offer's "id", copied exactly
 summary: one line e.g. "IndiGo 6E-6218 · 24 Nov 06:05 DEL → 08:25 BOM · nonstop"
 message: reason in under 20 words"""
-    prompt = (
-        f"Request: {request}\nOffers JSON:\n{json.dumps(offers, ensure_ascii=False, default=str)[:60000]}"
-    )
+    offers_json, shown = _offers_json(offers)
+    base = {**base, "offers_found": len(offers), "offers_shown": shown}
+    prompt = f"Request: {request}\nOffers JSON:\n{offers_json}"
     choice = _plain_json(model, choose_system, prompt, task_kind="pick", booking_id=booking_id)
     if choice.get("status") == "failed":
         return {

@@ -454,3 +454,91 @@ def test_claude_rest_pick_no_offers_names_route_not_price(monkeypatch):
     assert out["status"] == "no_match"
     assert "DEL → BOM on 2026-11-20" in out["message"]
     assert "MAX_PRICE" not in out["message"]
+
+
+# --- wrong airport code from extraction --------------------------------------
+
+
+def _offer(oid, dest, city, price=40000):
+    seg = {"origin": "DEL", "destination": dest, "origin_city": "New Delhi", "destination_city": city}
+    return {"id": oid, "price_total": price, "outbound": {"segments": [seg]}}
+
+
+def _route(dest, dest_city):
+    return {
+        "status": "ok",
+        "origin": "DEL",
+        "destination": dest,
+        "origin_city": "Delhi",
+        "destination_city": dest_city,
+        "date_from": "2026-11-29",
+        "return_from": None,
+    }
+
+
+def _baku(monkeypatch, extractions, offers_by_dest):
+    from traveldesk.agents import claude_agent
+
+    monkeypatch.setattr(claude_agent.config, "MAX_PRICE", None)
+    searched, models = [], []
+
+    def search(origin, dest, dep, return_from=None):
+        searched.append(dest)
+        return {"status": "ok", "search_id": f"S-{dest}", "offers": offers_by_dest[dest], "currency": "INR"}
+
+    monkeypatch.setattr(claude_agent.letsfg_rest, "search_flights", search)
+    replies = iter([*extractions, {"status": "picked", "offer_id": "GOOD", "summary": "J2 · DEL → GYD"}])
+
+    def plain_json(model, system, prompt, **k):
+        models.append((k.get("task_kind"), model, system))
+        return next(replies)
+
+    monkeypatch.setattr(claude_agent, "_plain_json", plain_json)
+    out = claude_agent.pick("2 tickets from delhi to baku next sunday", TRAVELLER, booking_id=None)
+    return out, searched, models
+
+
+def test_wrong_airport_code_is_retried_with_sonnet(monkeypatch):
+    from traveldesk.agents import claude_agent
+
+    out, searched, models = _baku(
+        monkeypatch,
+        [_route("GNY", "Baku"), _route("GYD", "Baku")],
+        {"GNY": [_offer("BAD", "GNY", "Şanlıurfa")], "GYD": [_offer("GOOD", "GYD", "Baku")]},
+    )
+    assert searched == ["GNY", "GYD"]
+    assert out["status"] == "picked" and out["offer_id"] == "GOOD" and out["destination"] == "GYD"
+    extract_calls = [m for m in models if m[0] == "extract"]
+    assert [m[1] for m in extract_calls] == [
+        claude_agent.config.CLAUDE_HAIKU_MODEL,
+        claude_agent.config.CLAUDE_SONNET_MODEL,
+    ]
+    assert "GNY is in Şanlıurfa, not Baku" in extract_calls[1][2]
+
+
+def test_still_wrong_airport_code_asks_for_codes(monkeypatch):
+    out, searched, _ = _baku(
+        monkeypatch,
+        [_route("GNY", "Baku"), _route("GNY", "Baku")],
+        {"GNY": [_offer("BAD", "GNY", "Şanlıurfa")]},
+    )
+    assert searched == ["GNY", "GNY"]
+    assert out["status"] == "need_info"
+    assert "GNY is Şanlıurfa, not Baku" in out["message"]
+
+
+def test_city_names_match_loosely_and_blank_cities_are_trusted(monkeypatch):
+    from traveldesk.agents import claude_agent
+
+    ex = _route("GYD", "Baku")
+    ok = {"status": "ok", "offers": [_offer("A", "GYD", "Baku")]}  # "Delhi" fits "New Delhi"
+    blank = {"status": "ok", "offers": [_offer("A", "GYD", "")]}
+    assert claude_agent._wrong_airports(ex, ok) == []
+    assert claude_agent._wrong_airports(ex, blank) == []
+
+
+def test_middle_name_and_gender_x_are_sent_the_iata_way():
+    p = letsfg_rest.map_passenger({**TRAVELLER, "middle_name": "Kumar", "gender": "x"})
+    assert p["given_name"] == "Raj Kumar" and p["family_name"] == "Gupta"
+    assert "middle_name" not in p
+    assert p["gender"] == "x"

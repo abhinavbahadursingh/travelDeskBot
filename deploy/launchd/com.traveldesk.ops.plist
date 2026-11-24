@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.traveldesk.ops</string>
+  <!-- If the project moves, update every /Users/rgl/Downloads/traveldesk-bot path below.
+       Install: cp deploy/launchd/com.traveldesk.ops.plist ~/Library/LaunchAgents/
+                launchctl load ~/Library/LaunchAgents/com.traveldesk.ops.plist -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/rgl/Downloads/traveldesk-bot/.venv/bin/python</string>
+    <string>-m</string>
+    <string>traveldesk.ops.scheduler</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/rgl/Downloads/traveldesk-bot</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key><string>/Users/rgl/Downloads/traveldesk-bot/src</string>
+    <key>TRAVELDESK_HOME</key><string>/Users/rgl/Downloads/traveldesk-bot</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/rgl/Downloads/traveldesk-bot/ops.log</string>
+  <key>StandardErrorPath</key><string>/Users/rgl/Downloads/traveldesk-bot/ops.log</string>
+</dict>
+</plist>

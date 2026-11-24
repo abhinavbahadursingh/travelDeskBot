@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from traveldesk import config
+from traveldesk.booking import countries
 from traveldesk.storage import secure_store
 
 log = logging.getLogger("traveller_profile")
@@ -42,7 +43,7 @@ BOOKING_ONLY_REQUIRED = (
     "passport_expiry",
 )
 BOOKING_REQUIRED = SEARCH_REQUIRED + BOOKING_ONLY_REQUIRED
-OPTIONAL_FIELDS = ("phone", "passport_issue")
+OPTIONAL_FIELDS = ("middle_name", "phone", "passport_issue")
 SENSITIVE_FIELDS = (
     "date_of_birth",
     "gender",
@@ -63,7 +64,7 @@ ADDRESS_FIELDS = ("address_line1", "address_city", "address_postal", "address_co
 ON_REQUEST_FIELDS = ADDRESS_FIELDS + ("phone_country",)
 
 # Saved-profile split.
-BASIC_FIELDS = ("given_name", "family_name", "date_of_birth", "gender", "phone")
+BASIC_FIELDS = ("given_name", "middle_name", "family_name", "date_of_birth", "gender", "phone")
 PASSPORT_FIELDS = ("nationality", "passport_number", "passport_country", "passport_expiry", "passport_issue")
 # Fields that are names of document data (LetsFG may ask for them on a fare).
 DOCUMENT_FIELDS = PASSPORT_FIELDS
@@ -85,6 +86,7 @@ MODAL_FIELDS = BASIC_FIELDS + PASSPORT_FIELDS + ("id_type",) + ON_REQUEST_FIELDS
 
 LABELS = {
     "given_name": "Given name (as on passport)",
+    "middle_name": "Middle name(s), if on your passport",
     "family_name": "Family name (as on passport)",
     "email": "Email",
     "phone": "Mobile number",
@@ -113,7 +115,17 @@ _PASSPORT = re.compile(r"^[A-Z0-9]{5,20}$")
 _CITY = re.compile(r"^[^\W\d_][^\W_ ]*(?:[ '\-.][^\W_]+)*\.?$")
 _POSTAL = re.compile(r"^[A-Z0-9][A-Z0-9 \-]{1,8}[A-Z0-9]$")
 _PLACEHOLDER_WORDS = ("TEST", "DUMMY", "SAMPLE", "EXAMPLE", "REPLACE", "PLACEHOLDER", "XXXX")
-_GENDER = {"m": "m", "male": "m", "f": "f", "female": "f"}
+# ICAO Doc 9303 sex marker on the passport: F, M or X (unspecified). IATA
+# passenger data (API / PADIS) uses the same F / M / X codes.
+_GENDER = {
+    "m": "m",
+    "male": "m",
+    "f": "f",
+    "female": "f",
+    "x": "x",
+    "unspecified": "x",
+    "<": "x",  # X as printed in a passport's machine-readable zone
+}
 
 
 @dataclass
@@ -181,7 +193,7 @@ def _check(
 ) -> tuple[object, str | None]:
     """Return (normalized_value, error_reason_or_None)."""
     v = str(raw).strip()
-    if name in ("given_name", "family_name"):
+    if name in ("given_name", "middle_name", "family_name"):
         return v, None if _NAME.match(v) else "use letters, spaces, hyphens or apostrophes only"
     if name == "email":
         return v, None if _EMAIL.match(v) else "not a valid email address"
@@ -189,10 +201,18 @@ def _check(
         return v, None if _PHONE.match(v) else "not a valid phone number"
     if name == "gender":
         g = _GENDER.get(v.lower())
-        return g, None if g else "must be male or female (LetsFG supports only these)"
+        return g, None if g else "must be M, F or X, as on your passport"
     if name in ("nationality", "passport_country", "address_country", "phone_country"):
         c = v.upper()
-        return c, None if _COUNTRY.match(c) else "must be a 2-letter ISO country code"
+        if not _COUNTRY.match(c):
+            return c, "must be a 2-letter ISO country code"
+        if not countries.is_country(c):
+            hint = countries.SUGGEST.get(c)
+            # Reasons never echo the typed value (they reach logs and Slack).
+            return c, "is not a real ISO country code" + (
+                f" (for the United Kingdom use {hint})" if hint else ""
+            )
+        return c, None
     if name == "passport_number":
         p = re.sub(r"[\s\-]", "", v).upper()
         if not _PASSPORT.match(p):
@@ -296,7 +316,7 @@ def validate(
 
     if domestic:
         required = DOMESTIC_REQUIRED
-        optional = ("id_type",)
+        optional = ("middle_name", "id_type")
     else:
         required = BOOKING_REQUIRED
         optional = OPTIONAL_FIELDS
@@ -320,7 +340,28 @@ def validate(
         res.cleaned[name] = value
         if err:
             res.invalid[name] = err
+    _check_issuer(res)
     return res
+
+
+def _check_issuer(res: ValidationResult) -> None:
+    """A passport is issued by the holder's country of nationality (ICAO Doc
+    9303), apart from the few territories in countries.NATIONALITY_ISSUER_EXCEPTIONS."""
+    nat, issuer = res.cleaned.get("nationality"), res.cleaned.get("passport_country")
+    if not nat or not issuer or "nationality" in res.invalid or "passport_country" in res.invalid:
+        return
+    if not countries.issuer_matches(nat, issuer):
+        res.invalid["passport_country"] = (
+            f"doesn't match your nationality ({nat}): a passport is issued by your country "
+            "of nationality. Check both"
+        )
+
+
+def full_given_name(profile: dict) -> str:
+    """Given name plus middle name(s), the way airlines and IATA PNRs store it
+    (SURNAME/GIVEN MIDDLE): there is no separate middle-name field."""
+    parts = (str(profile.get("given_name") or "").strip(), str(profile.get("middle_name") or "").strip())
+    return " ".join(p for p in parts if p)
 
 
 def _from_json(slack_user: str) -> dict | None:
@@ -401,10 +442,15 @@ def modal_fields(problems: list, *, domestic: bool) -> list:
     International: the basic fields that need fixing, plus all passport
     fields together when any of them is missing, invalid or expiring too soon."""
     if domestic:
-        return ["given_name", "family_name", "date_of_birth", "gender", "phone", "id_type"]
-    out = [f for f in BASIC_FIELDS if f in problems]
+        return ["given_name", "middle_name", "family_name", "date_of_birth", "gender", "phone", "id_type"]
+    out = [f for f in BASIC_FIELDS if f in problems and f != "middle_name"]
     if any(f in problems for f in PASSPORT_FIELDS):
         out += list(PASSPORT_FIELDS)
+    if out:
+        # Optional, so never a "problem" by itself: offered whenever the form opens,
+        # since a missing middle name is a name mismatch at check-in.
+        at = out.index("given_name") + 1 if "given_name" in out else 0
+        out.insert(at, "middle_name")
     return out
 
 

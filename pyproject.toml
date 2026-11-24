@@ -16,6 +16,11 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "httpx>=0.27,<1",
     "cryptography>=42,<51",
+    # ops layer (traveldesk.ops)
+    "sqlalchemy>=2.0,<3",
+    "alembic>=1.13,<2",
+    "pydantic-settings>=2.4,<3",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +32,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"traveldesk.ops" = ["gst_rates.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

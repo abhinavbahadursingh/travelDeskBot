@@ -168,3 +168,17 @@ def test_record_usage_writes_to_db(claude_mod):
     assert r["output_tokens"] == 56
     assert r["provider"] == "claude"
     assert r["est_cost_usd"] > 0
+
+
+def test_offers_json_keeps_whole_offers_cheapest_first():
+    import json
+
+    from traveldesk.agents import claude_agent
+
+    offers = [{"id": f"o{i}", "price": 100 - i, "pad": "x" * 400} for i in range(50)]
+    text, shown = claude_agent._offers_json(offers, limit=3000)
+    parsed = json.loads(text)  # valid JSON: no offer cut in half
+    assert len(text) <= 3000
+    assert len(parsed) == shown < 50
+    assert [o["price"] for o in parsed] == sorted(o["price"] for o in parsed)
+    assert parsed[0]["id"] == "o49"  # the cheapest is always shown

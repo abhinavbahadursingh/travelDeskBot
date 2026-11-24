@@ -134,7 +134,8 @@ def search_flights(
 
 # --- Book ------------------------------------------------------------------
 
-_GENDER = {"m": "m", "male": "m", "f": "f", "female": "f"}
+# F / M / X as on the passport (ICAO Doc 9303; IATA API/PADIS uses the same codes).
+_GENDER = {"m": "m", "male": "m", "f": "f", "female": "f", "x": "x", "unspecified": "x"}
 _OPTIONAL_PASSENGER_FIELDS = (
     "nationality",
     "phone_country",
@@ -153,8 +154,12 @@ _OPTIONAL_PASSENGER_FIELDS = (
 
 def map_passenger(traveller: dict) -> dict:
     """Validated traveller profile → LetsFG REST passenger object."""
+    # Airlines have no middle-name field: IATA names are SURNAME/GIVEN MIDDLE,
+    # so middle names travel inside given_name.
+    middle = str(traveller.get("middle_name") or "").strip()
+    given = str(traveller["given_name"]).strip()
     p: dict[str, Any] = {
-        "given_name": str(traveller["given_name"]).strip(),
+        "given_name": f"{given} {middle}" if middle else given,
         "family_name": str(traveller["family_name"]).strip(),
         "email": str(traveller["email"]).strip(),
         "passenger_type": "adult",
@@ -484,7 +489,13 @@ def _error_result(e: RestError, *, phase: str) -> dict:
             fields = list(fields)
         names = ", ".join(map(str, fields)) if isinstance(fields, list) else "passenger details"
         # Field names only: the server's message may echo the submitted value.
-        return {"status": "need_info", "message": f"LetsFG rejected these traveller details: {names}."}
+        out = {"status": "need_info", "message": f"LetsFG rejected these traveller details: {names}."}
+        if isinstance(fields, list) and "gender" in map(_normalize_field, fields):
+            out["message"] += (
+                " If your passport shows sex X, this seller or airline may not accept X yet: "
+                "ask the travel admin to book it with the airline directly."
+            )
+        return out
     if e.status_code == 401:
         return {
             "status": "setup_required",

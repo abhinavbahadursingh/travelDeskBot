@@ -89,7 +89,10 @@ def test_missing_search_fields():
         ("date_of_birth", "2030-01-01", "past"),
         ("date_of_birth", "2020-01-01", "at least 12"),
         ("date_of_birth", "1890-01-01", "plausible"),
-        ("gender", "x", "male or female"),
+        ("gender", "other", "M, F or X"),
+        ("nationality", "XX", "not a real ISO country code"),
+        ("passport_country", "UK", "use GB"),
+        ("middle_name", "R2D2", "letters"),
         ("nationality", "IND", "2-letter"),
         ("passport_country", "India", "2-letter"),
         ("passport_number", "AB1", "5-20"),
@@ -273,6 +276,7 @@ def test_confirm_opens_modal_for_missing_fields_only(user, threads):
     # Missing basic field + the whole passport section (pre-filled where known).
     assert set(inputs) == {
         "date_of_birth",
+        "middle_name",
         "nationality",
         "passport_number",
         "passport_country",
@@ -437,3 +441,37 @@ def test_sensitive_values_never_logged(user, threads, caplog, monkeypatch):
 
     assert PASSPORT_NO not in caplog.text
     assert DOB not in caplog.text
+
+
+# --- IATA / ICAO passenger data ---------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["x", "X", "unspecified", "<"])
+def test_gender_x_is_accepted_as_on_passport(value):
+    res = tp.validate({**VALID, "gender": value}, for_booking=True, today=TODAY)
+    assert res.ok, res.summary()
+    assert res.cleaned["gender"] == "x"
+
+
+def test_middle_name_is_optional_and_joined_to_given_name():
+    assert tp.validate(VALID, for_booking=True, today=TODAY).ok
+    res = tp.validate({**VALID, "middle_name": "Kumar"}, for_booking=True, today=TODAY)
+    assert res.ok and res.cleaned["middle_name"] == "Kumar"
+    assert tp.full_given_name({**VALID, "middle_name": " Kumar "}) == "Raj Kumar"
+    assert tp.full_given_name(VALID) == "Raj"
+
+
+def test_passport_country_must_match_nationality():
+    res = tp.validate({**VALID, "passport_country": "US"}, for_booking=True, today=TODAY)
+    assert "doesn't match your nationality (IN)" in res.invalid["passport_country"]
+
+
+def test_hong_kong_passport_for_chinese_national_is_accepted():
+    res = tp.validate({**VALID, "nationality": "CN", "passport_country": "HK"}, for_booking=True, today=TODAY)
+    assert res.ok, res.summary()
+
+
+def test_middle_name_offered_whenever_the_form_opens():
+    assert tp.modal_fields(["nationality"], domestic=False)[0] == "middle_name"
+    assert tp.modal_fields(["given_name"], domestic=False)[:2] == ["given_name", "middle_name"]
+    assert tp.modal_fields([], domestic=False) == []
